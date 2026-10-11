@@ -24,6 +24,10 @@ jobs:
         with:
           channel: 'stable'
 
+      # ખૂટતું એન્ડ્રોઇડ પ્લેટફોર્મ માળખું આપમેળે જનરેટ કરશે
+      - name: Recreate Android Project Files
+        run: flutter create --platforms=android .
+
       - name: Install Dependencies
         run: flutter pub get
 
