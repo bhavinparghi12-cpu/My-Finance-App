@@ -13,6 +13,7 @@ class AuthGate extends StatefulWidget {
 
 class _AuthGateState extends State<AuthGate> {
   final TextEditingController _pinController = TextEditingController();
+  final TextEditingController _emailController = TextEditingController();
   bool _isFirstTime = false;
   bool _isLoading = true;
   String _errorMessage = '';
@@ -39,7 +40,12 @@ class _AuthGateState extends State<AuthGate> {
     }
 
     if (_isFirstTime) {
-      await SecurityService.setupPin(pin);
+      final email = _emailController.text.trim();
+      if (email.isEmpty || !email.contains('@')) {
+        setState(() => _errorMessage = 'માન્ય રિકવરી જીમેઇલ દાખલ કરો');
+        return;
+      }
+      await SecurityService.setupPin(pin, email);
       await _openEncryptedDatabaseAndNavigate();
     } else {
       final isValid = await SecurityService.verifyPin(pin);
@@ -47,7 +53,7 @@ class _AuthGateState extends State<AuthGate> {
         await _openEncryptedDatabaseAndNavigate();
       } else {
         setState(() {
-          _errorMessage = 'ખોટો પિન! ફરી પ્રયાસ કરો.';
+          _errorMessage = 'ખોટો પાસવર્ડ! ફરી પ્રયાસ કરો.';
           _pinController.clear();
         });
       }
@@ -58,7 +64,22 @@ class _AuthGateState extends State<AuthGate> {
     try {
       final googleSignIn = GoogleSignIn();
       final account = await googleSignIn.signIn();
-      if (account == null) return; // યુઝરે કેન્સલ કર્યું
+      if (account == null) return;
+
+      // ડાયનેમિક ઈમેઇલ ચેક: જે ઈમેઇલ અગાઉ સેવ કરેલો છે તે જ છે કે નહીં
+      final savedEmail = await SecurityService.getRecoveryEmail();
+
+      if (savedEmail != null &&
+          account.email.trim().toLowerCase() != savedEmail.trim().toLowerCase()) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: Colors.red,
+            content: Text('અનધિકૃત એકાઉન્ટ! ફક્ત $savedEmail વડે જ પિન રીસેટ કરી શકાશે.'),
+          ),
+        );
+        return;
+      }
 
       if (!mounted) return;
       final newPinController = TextEditingController();
@@ -179,6 +200,22 @@ class _AuthGateState extends State<AuthGate> {
                 ),
                 onSubmitted: (_) => _unlockApp(),
               ),
+              // જો પહેલીવાર એપ ઓપન થઈ હોય તો જ રિકવરી ઈમેઇલ દાખલ કરવાનું બોક્સ દેખાશે
+              if (_isFirstTime) ...[
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _emailController,
+                  keyboardType: TextInputType.emailAddress,
+                  decoration: InputDecoration(
+                    labelText: 'રિકવરી જીમેઇલ (પિન ભૂલી જવા પર)',
+                    hintText: 'example@gmail.com',
+                    prefixIcon: const Icon(Icons.email_outlined),
+                    filled: true,
+                    fillColor: Colors.white,
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ],
               const SizedBox(height: 20),
               ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(
