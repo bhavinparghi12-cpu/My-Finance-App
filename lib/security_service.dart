@@ -10,16 +10,19 @@ class SecurityService {
 
   static const _pinHashKey = 'user_pin_hash_v1';
   static const _hiveKeyTag = 'hive_encryption_key_v1';
+  static const _recoveryEmailKey = 'recovery_email_v1'; // ઈમેઇલ માટે કી
 
   static Future<bool> isPinSet() async {
     final hash = await _storage.read(key: _pinHashKey);
     return hash != null && hash.isNotEmpty;
   }
 
-  static Future<void> setupPin(String pin) async {
+  // નવો પિન અને રિકવરી ઈમેઇલ એકસાથે સેટ કરો
+  static Future<void> setupPin(String pin, String email) async {
     final bytes = utf8.encode('SECURE_SALT_FINANCE_$pin');
     final digest = sha256.convert(bytes).toString();
     await _storage.write(key: _pinHashKey, value: digest);
+    await _storage.write(key: _recoveryEmailKey, value: email.trim().toLowerCase());
 
     final existingKey = await _storage.read(key: _hiveKeyTag);
     if (existingKey == null) {
@@ -31,7 +34,17 @@ class SecurityService {
     }
   }
 
-  // પિન રીસેટ કરવા માટે ફંક્શન
+  // રિકવરી ઈમેઇલ મેળવો
+  static Future<String?> getRecoveryEmail() async {
+    return await _storage.read(key: _recoveryEmailKey);
+  }
+
+  // ભવિષ્યમાં ઈમેઇલ અપડેટ કરવા માટે
+  static Future<void> updateRecoveryEmail(String newEmail) async {
+    await _storage.write(key: _recoveryEmailKey, value: newEmail.trim().toLowerCase());
+  }
+
+  // પિન રીસેટ કરો
   static Future<void> resetPin(String newPin) async {
     final bytes = utf8.encode('SECURE_SALT_FINANCE_$newPin');
     final digest = sha256.convert(bytes).toString();
