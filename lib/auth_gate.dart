@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'security_service.dart';
 import 'main.dart';
 
@@ -46,10 +47,71 @@ class _AuthGateState extends State<AuthGate> {
         await _openEncryptedDatabaseAndNavigate();
       } else {
         setState(() {
-          _errorMessage = 'ખોટો પાસવર્ડ! ફરી પ્રયાસ કરો.';
+          _errorMessage = 'ખોટો પિન! ફરી પ્રયાસ કરો.';
           _pinController.clear();
         });
       }
+    }
+  }
+
+  Future<void> _resetPinWithGoogle() async {
+    try {
+      final googleSignIn = GoogleSignIn();
+      final account = await googleSignIn.signIn();
+      if (account == null) return; // યુઝરે કેન્સલ કર્યું
+
+      if (!mounted) return;
+      final newPinController = TextEditingController();
+
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          title: const Text('નવો પિન સેટ કરો'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('ઓળખ ચકાસાયેલ: ${account.email}'),
+              const SizedBox(height: 12),
+              TextField(
+                controller: newPinController,
+                obscureText: true,
+                keyboardType: TextInputType.number,
+                maxLength: 6,
+                decoration: const InputDecoration(
+                  labelText: 'નવો ૪ થી ૬ અંકનો પિન',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('રદ કરો'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                final newPin = newPinController.text.trim();
+                if (newPin.length >= 4) {
+                  await SecurityService.resetPin(newPin);
+                  if (ctx.mounted) Navigator.pop(ctx);
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('પિન સફળતાપૂર્વક બદલાઈ ગયો છે!')),
+                    );
+                  }
+                }
+              },
+              child: const Text('સેવ કરો'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Google સાઈન-ઇન નિષ્ફળ: $e')),
+      );
     }
   }
 
@@ -57,9 +119,12 @@ class _AuthGateState extends State<AuthGate> {
     final encKey = await SecurityService.getDatabaseKey();
     final cipher = HiveAesCipher(encKey);
 
-    // ડેટાબેઝ AES-256 એન્ક્રિપ્શન સાથે ઓપન થશે
-    await Hive.openBox('categoriesBox', encryptionCipher: cipher);
-    await Hive.openBox('transactionsBox', encryptionCipher: cipher);
+    if (!Hive.isBoxOpen('categoriesBox')) {
+      await Hive.openBox('categoriesBox', encryptionCipher: cipher);
+    }
+    if (!Hive.isBoxOpen('transactionsBox')) {
+      await Hive.openBox('transactionsBox', encryptionCipher: cipher);
+    }
 
     if (mounted) {
       Navigator.pushReplacement(
@@ -126,6 +191,14 @@ class _AuthGateState extends State<AuthGate> {
                 icon: const Icon(Icons.lock_open),
                 label: Text(_isFirstTime ? 'પિન સેવ કરી પ્રવેશ કરો' : 'અનલૉક કરો'),
               ),
+              if (!_isFirstTime) ...[
+                const SizedBox(height: 12),
+                TextButton.icon(
+                  onPressed: _resetPinWithGoogle,
+                  icon: const Icon(Icons.g_mobiledata, size: 28),
+                  label: const Text('Google થી પિન રીસેટ કરો'),
+                ),
+              ],
             ],
           ),
         ),
