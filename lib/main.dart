@@ -14,7 +14,11 @@ final ValueNotifier<String?> appBackgroundImage = ValueNotifier<String?>(null);
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Hive.initFlutter();
+
+  // ૧. ત્રણેય જરૂરી બોક્સ ઓપન કર્યા
   await Hive.openBox('settingsBox');
+  await Hive.openBox('categoriesBox');
+  await Hive.openBox('transactionsBox');
 
   final settings = Hive.box('settingsBox');
   final savedColor = settings.get('primaryColor', defaultValue: Colors.teal.value);
@@ -135,7 +139,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
       if (!matchesTime) return false;
 
-      // Analysis Type Filtering
       switch (selectedAnalysisView) {
         case AnalysisView.expenseOnly:
           return tx['categoryEffect'] == 'expenseDebit';
@@ -152,10 +155,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
   double _calculateTotal(String effect) {
     return filteredTransactions
         .where((t) => t['categoryEffect'] == effect)
-        .fold(0.0, (sum, item) => sum + (item['amount'] as num).toDouble());
+        .fold(0.0, (sum, item) {
+          final amt = item['amount'];
+          if (amt is num) return sum + amt.toDouble();
+          return sum + (double.tryParse(amt?.toString() ?? '0') ?? 0.0);
+        });
   }
 
-  // તારીખ પસંદગી સાથે નવો હિસાબ ઉમેરો
   void _addTransactionDialog() {
     final titleController = TextEditingController();
     final amountController = TextEditingController();
@@ -193,7 +199,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     value: cat['id'].toString(),
                     child: Text('${cat['name']}'),
                   );
-                }).toList>,
+                }).toList(), // ૨. અહીં toList() સુધાર્યું
                 onChanged: (val) {
                   if (val != null) {
                     setModalState(() {
@@ -253,7 +259,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // થીમ બદલવા માટેનું ડાયલોગ (કલર્સ અને ફોટો સિલેક્શન)
   void _openThemeDialog() {
     final colors = [
       Colors.teal,
@@ -469,7 +474,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 padding: const EdgeInsets.all(16.0),
                 child: Column(
                   children: [
-                    // સમયગાળો ડ્રોપડાઉન
                     Card(
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 4.0),
@@ -525,8 +529,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         ),
                       ),
                     const SizedBox(height: 12),
-
-                    // સમરી કાર્ડ્સ
                     Row(
                       children: [
                         Expanded(child: _buildMetricCard('આવક', '₹${totalIncome.toStringAsFixed(0)}', Colors.green)),
@@ -537,8 +539,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ],
                     ),
                     const SizedBox(height: 16),
-
-                    // એનાલિસિસ ફિલ્ટર્સ
                     Card(
                       child: Padding(
                         padding: const EdgeInsets.all(12.0),
@@ -585,8 +585,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ),
                     ),
                     const SizedBox(height: 16),
-
-                    // ચાર્ટ સેક્શન
                     Card(
                       child: Padding(
                         padding: const EdgeInsets.all(16.0),
@@ -611,8 +609,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ),
                     ),
                     const SizedBox(height: 16),
-
-                    // ટ્રાન્ઝેક્શન લિસ્ટ
                     ListView.builder(
                       shrinkWrap: true,
                       physics: const NeverScrollableScrollPhysics(),
@@ -693,7 +689,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         colors[name] = Color(tx['categoryColor'] as int);
       }
     } else {
-      // પ્રકાર અનુસાર ગ્રૂપિંગ
       for (var tx in filteredTransactions) {
         final effect = tx['categoryEffect'].toString();
         String label = 'ખર્ચ';
