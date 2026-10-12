@@ -20,6 +20,7 @@ dependencies:
   path_provider: ^2.1.3
   flutter_secure_storage: ^9.2.2
   crypto: ^3.0.3
+  pointycastle: ^3.9.1 # 👈 અહીં સિક્યોરિટી માટે ઉમેર્યું
   google_sign_in: ^6.2.1
   image_picker: ^1.1.2
 
@@ -30,3 +31,15 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+  # 👈 અહીં નીચે ગુજરાતી ફોન્ટ્સ ઉમેર્યા છે
+  assets:
+    - assets/fonts/NotoSansGujarati-Regular.ttf
+    - assets/fonts/NotoSansGujarati-Bold.ttf
+
+  fonts:
+    - family: NotoSansGujarati
+      fonts:
+        - asset: assets/fonts/NotoSansGujarati-Regular.ttf
+        - asset: assets/fonts/NotoSansGujarati-Bold.ttf
+          weight: 700
