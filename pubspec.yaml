@@ -42,4 +42,4 @@ flutter:
       fonts:
         - asset: assets/fonts/NotoSansGujarati-Regular.ttf
         - asset: assets/fonts/NotoSansGujarati-Bold.ttf
-          weight: 700
+          weight:700
