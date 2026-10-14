@@ -25,11 +25,9 @@ jobs:
           channel: 'stable'
           cache: true
 
-      # ખૂટતું એન્ડ્રોઇડ માળખું (android folder) આપમેળે જનરેટ કરશે
       - name: Recreate Android Project Files
         run: flutter create --platforms=android .
 
-      # આપમેળે બનેલી gradle ફાઇલમાં minSdkVersion 21 સેટ કરશે (Groovy કે Kotlin બંને માટે)
       - name: Set minSdkVersion to 21
         run: |
           sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' android/app/build.gradle || true
@@ -43,12 +41,11 @@ jobs:
           mkdir -p assets/fonts
           ls -la assets/fonts/ || true
 
-      # GitHub ના કીસ્ટોરનો સાચો SHA-1 પ્રિન્ટ કરશે (Firebase માં ઉમેરવા માટે)
       - name: Get SHA-1 Fingerprint
         run: |
-        mkdir -p ~/.android
-        keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-        keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android
+          mkdir -p ~/.android
+          keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android
 
       - name: Build Android Release APK
         run: flutter build apk --release --no-tree-shake-icons
