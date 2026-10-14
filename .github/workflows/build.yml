@@ -26,6 +26,16 @@ jobs:
           channel: 'stable'
           cache: true
 
+      # ખૂટતું એન્ડ્રોઇડ માળખું (android folder) આપમેળે જનરેટ કરશે
+      - name: Recreate Android Project Files
+        run: flutter create --platforms=android .
+
+      # આપમેળે બનેલી gradle ફાઇલમાં minSdkVersion 21 સેટ કરશે (Groovy કે Kotlin બંને માટે)
+      - name: Set minSdkVersion to 21
+        run: |
+          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' android/app/build.gradle || true
+          sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/g' android/app/build.gradle.kts || true
+
       - name: Install Dependencies
         run: flutter pub get
 
