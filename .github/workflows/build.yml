@@ -18,24 +18,28 @@ jobs:
         with:
           distribution: 'zulu'
           java-version: '17'
+          cache: 'gradle'
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-
-      # ખૂટતું એન્ડ્રોઇડ પ્લેટફોર્મ માળખું આપમેળે જનરેટ કરશે
-      - name: Recreate Android Project Files
-        run: flutter create --platforms=android .
+          cache: true
 
       - name: Install Dependencies
         run: flutter pub get
 
+      - name: Verify Font Assets
+        run: |
+          mkdir -p assets/fonts
+          ls -la assets/fonts/ || true
+
       - name: Build Android Release APK
-        run: flutter build apk --release
+        run: flutter build apk --release --no-tree-shake-icons
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: my-finance-app-release
           path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 14
