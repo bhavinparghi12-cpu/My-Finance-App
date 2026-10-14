@@ -44,6 +44,11 @@ jobs:
           mkdir -p assets/fonts
           ls -la assets/fonts/ || true
 
+      # GitHub ના કીસ્ટોરનો સાચો SHA-1 પ્રિન્ટ કરશે (Firebase માં ઉમેરવા માટે)
+      - name: Get SHA-1 Fingerprint
+        run: |
+          keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android | grep "SHA1:" || true
+
       - name: Build Android Release APK
         run: flutter build apk --release --no-tree-shake-icons
 
