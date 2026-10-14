@@ -12,145 +12,198 @@ class AuthGate extends StatefulWidget {
 }
 
 class _AuthGateState extends State<AuthGate> {
-  final TextEditingController _pinController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
   bool _isFirstTime = false;
   bool _isLoading = true;
+  bool _obscurePassword = true;
   String _errorMessage = '';
 
   @override
   void initState() {
     super.initState();
-    _checkSetup();
+    _checkInitialState();
   }
 
-  Future<void> _checkSetup() async {
-    final hasPin = await SecurityService.isPinSet();
-    setState(() {
-      _isFirstTime = !hasPin;
-      _isLoading = false;
-    });
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
   }
 
-  Future<void> _unlockApp() async {
-    final pin = _pinController.text.trim();
-    if (pin.length < 4) {
-      setState(() => _errorMessage = 'ઓછામાં ઓછો 4 આંકડાનો પિન દાખલ કરો');
+  Future<void> _checkInitialState() async {
+    final lastEmail = await SecurityService.getLastActiveEmail();
+    if (lastEmail != null && lastEmail.isNotEmpty) {
+      _emailController.text = lastEmail;
+      final hasPwd = await SecurityService.isPasswordSetForEmail(lastEmail);
+      setState(() {
+        _isFirstTime = !hasPwd;
+        _isLoading = false;
+      });
+    } else {
+      setState(() {
+        _isFirstTime = true;
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _onEmailChanged(String email) async {
+    if (email.contains('@') && email.contains('.')) {
+      final hasPwd = await SecurityService.isPasswordSetForEmail(email.trim());
+      setState(() {
+        _isFirstTime = !hasPwd;
+        _errorMessage = '';
+      });
+    }
+  }
+
+  Future<void> _authenticate() async {
+    final email = _emailController.text.trim().toLowerCase();
+    final pwd = _passwordController.text;
+
+    if (!email.contains('@') || !email.contains('.')) {
+      setState(() => _errorMessage = 'માન્ય ઈમેઈલ એડ્રેસ દાખલ કરો');
+      return;
+    }
+
+    if (pwd.isEmpty) {
+      setState(() => _errorMessage = 'પાસવર્ડ ખાલી હોઈ શકે નહીં');
       return;
     }
 
     if (_isFirstTime) {
-      final email = _emailController.text.trim();
-      if (email.isEmpty || !email.contains('@')) {
-        setState(() => _errorMessage = 'માન્ય રિકવરી જીમેઇલ દાખલ કરો');
-        return;
-      }
-      await SecurityService.setupPin(pin, email);
-      await _openEncryptedDatabaseAndNavigate();
+      // કોઈ પણ કેરેક્ટર અને અનલિમિટેડ લંબાઈ સપોર્ટેડ
+      await SecurityService.setupUserAccount(email, pwd);
+      await _openUserDatabaseAndNavigate(email);
     } else {
-      final isValid = await SecurityService.verifyPin(pin);
+      final isValid = await SecurityService.verifyPassword(email, pwd);
       if (isValid) {
-        await _openEncryptedDatabaseAndNavigate();
+        await SecurityService.setLastActiveEmail(email);
+        await _openUserDatabaseAndNavigate(email);
       } else {
         setState(() {
-          _errorMessage = 'ખોટો પાસવર્ડ! ફરી પ્રયાસ કરો.';
-          _pinController.clear();
+          _errorMessage = 'ખોટો પાસવર્ડ! કૃપા કરીને ફરી પ્રયાસ કરો.';
+          _passwordController.clear();
         });
       }
     }
   }
 
-  Future<void> _resetPinWithGoogle() async {
+  Future<void> _resetPasswordWithGoogle() async {
     try {
       final googleSignIn = GoogleSignIn();
       final account = await googleSignIn.signIn();
       if (account == null) return;
 
-      // ડાયનેમિક ઈમેઇલ ચેક: જે ઈમેઇલ અગાઉ સેવ કરેલો છે તે જ છે કે નહીં
-      final savedEmail = await SecurityService.getRecoveryEmail();
+      final currentEmail = _emailController.text.trim().toLowerCase();
 
-      if (savedEmail != null &&
-          account.email.trim().toLowerCase() != savedEmail.trim().toLowerCase()) {
+      // માત્ર જે તે ચોક્કસ ઈમેઈલ જ પોતાનો પાસવર્ડ રીસેટ કરી શકે
+      if (currentEmail.isNotEmpty && account.email.trim().toLowerCase() != currentEmail) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             backgroundColor: Colors.red,
-            content: Text('અનધિકૃત એકાઉન્ટ! ફક્ત $savedEmail વડે જ પિન રીસેટ કરી શકાશે.'),
+            content: Text('અનધિકૃત એકાઉન્ટ! ફક્ત $currentEmail વડે જ પાસવર્ડ રીસેટ થઈ શકે.'),
           ),
         );
         return;
       }
 
       if (!mounted) return;
-      final newPinController = TextEditingController();
+      final newPwdController = TextEditingController();
+      bool obscureNew = true;
 
-      showDialog(
+      await showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (ctx) => AlertDialog(
-          title: const Text('નવો પિન સેટ કરો'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('ઓળખ ચકાસાયેલ: ${account.email}'),
-              const SizedBox(height: 12),
-              TextField(
-                controller: newPinController,
-                obscureText: true,
-                keyboardType: TextInputType.number,
-                maxLength: 6,
-                decoration: const InputDecoration(
-                  labelText: 'નવો ૪ થી ૬ અંકનો પિન',
-                  border: OutlineInputBorder(),
+        builder: (ctx) => StatefulBuilder(
+          builder: (context, setDlgState) => AlertDialog(
+            title: const Text('નવો માસ્ટર પાસવર્ડ સેટ કરો'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('ચકાસાયેલ એકાઉન્ટ: ${account.email}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: newPwdController,
+                  obscureText: obscureNew,
+                  decoration: InputDecoration(
+                    labelText: 'નવો સુરક્ષિત પાસવર્ડ (કોઈપણ લંબાઈ)',
+                    border: const OutlineInputBorder(),
+                    suffixIcon: IconButton(
+                      icon: Icon(obscureNew ? Icons.visibility_off : Icons.visibility),
+                      onPressed: () => setDlgState(() => obscureNew = !obscureNew),
+                    ),
+                  ),
                 ),
+              ],
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ કરો')),
+              ElevatedButton(
+                onPressed: () async {
+                  final newPwd = newPwdController.text;
+                  if (newPwd.isNotEmpty) {
+                    await SecurityService.resetPassword(account.email, newPwd);
+                    if (ctx.mounted) Navigator.pop(ctx);
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('પાસવર્ડ સફળતાપૂર્વક બદલાઈ ગયો છે!')),
+                      );
+                    }
+                  }
+                },
+                child: const Text('સેવ કરો'),
               ),
             ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('રદ કરો'),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                final newPin = newPinController.text.trim();
-                if (newPin.length >= 4) {
-                  await SecurityService.resetPin(newPin);
-                  if (ctx.mounted) Navigator.pop(ctx);
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('પિન સફળતાપૂર્વક બદલાઈ ગયો છે!')),
-                    );
-                  }
-                }
-              },
-              child: const Text('સેવ કરો'),
-            ),
-          ],
         ),
       );
+      newPwdController.dispose();
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Google સાઈન-ઇન નિષ્ફળ: $e')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Google સાઈન-ઇન નિષ્ફળ: $e')),
+        );
+      }
     }
   }
 
-  Future<void> _openEncryptedDatabaseAndNavigate() async {
-    final encKey = await SecurityService.getDatabaseKey();
+  Future<void> _openUserDatabaseAndNavigate(String email) async {
+    final encKey = await SecurityService.getDatabaseKeyForEmail(email);
     final cipher = HiveAesCipher(encKey);
 
-    if (!Hive.isBoxOpen('categoriesBox')) {
-      await Hive.openBox('categoriesBox', encryptionCipher: cipher);
+    // દરેક ઈમેઈલ માટે અલગ આઈસોલેટેડ બોક્સ પ્રિફિક્સ
+    final prefix = email.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_');
+
+    final catBoxName = 'catBox_$prefix';
+    final accBoxName = 'accBox_$prefix';
+    final txBoxName = 'txBox_$prefix';
+
+    if (!Hive.isBoxOpen(catBoxName)) {
+      await Hive.openBox(catBoxName, encryptionCipher: cipher);
     }
-    if (!Hive.isBoxOpen('transactionsBox')) {
-      await Hive.openBox('transactionsBox', encryptionCipher: cipher);
+    if (!Hive.isBoxOpen(accBoxName)) {
+      await Hive.openBox(accBoxName, encryptionCipher: cipher);
+    }
+    if (!Hive.isBoxOpen(txBoxName)) {
+      await Hive.openBox(txBoxName, encryptionCipher: cipher);
     }
 
     if (mounted) {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (_) => const DashboardScreen()),
+        MaterialPageRoute(
+          builder: (_) => DashboardScreen(
+            userEmail: email,
+            catBoxName: catBoxName,
+            accBoxName: accBoxName,
+            txBoxName: txBoxName,
+          ),
+        ),
       );
     }
   }
@@ -165,57 +218,57 @@ class _AuthGateState extends State<AuthGate> {
       backgroundColor: Colors.grey[100],
       body: Center(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 28.0),
+          padding: const EdgeInsets.symmetric(horizontal: 26.0),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.shield_outlined, size: 80, color: Colors.teal),
-              const SizedBox(height: 16),
+              const Icon(Icons.lock_person_outlined, size: 75, color: Colors.teal),
+              const SizedBox(height: 12),
               Text(
-                _isFirstTime ? 'સુરક્ષિત માસ્ટર પિન બનાવો' : 'નાણાકીય વૉલ્ટ અનલૉક કરો',
+                _isFirstTime ? 'નવું સુરક્ષિત એકાઉન્ટ બનાવો' : 'નાણાકીય વૉલ્ટ અનલૉક કરો',
                 style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 6),
               Text(
                 _isFirstTime
-                    ? 'તમારો ડેટા AES-256 થી સુરક્ષિત થશે'
-                    : 'એપ ખોલવા માટે તમારો ગુપ્ત પિન દાખલ કરો',
-                style: const TextStyle(color: Colors.grey),
+                    ? 'તમારો ડેટા તમારા ચોક્કસ ઈમેઈલ અને AES-256 થી લોક રહેશે'
+                    : 'પ્રવેશવા માટે તમારો માસ્ટર પાસવર્ડ દાખલ કરો',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.grey, fontSize: 13),
               ),
               const SizedBox(height: 24),
               TextField(
-                controller: _pinController,
-                obscureText: true,
-                keyboardType: TextInputType.number,
-                maxLength: 6,
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 24, letterSpacing: 10, fontWeight: FontWeight.bold),
+                controller: _emailController,
+                keyboardType: TextInputType.emailAddress,
+                onChanged: _onEmailChanged,
                 decoration: InputDecoration(
-                  counterText: '',
-                  hintText: '••••',
-                  errorText: _errorMessage.isEmpty ? null : _errorMessage,
+                  labelText: 'ગૂગલ / રિકવરી ઈમેઈલ એડ્રેસ',
+                  prefixIcon: const Icon(Icons.email_outlined),
                   filled: true,
                   fillColor: Colors.white,
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                 ),
-                onSubmitted: (_) => _unlockApp(),
               ),
-              // જો પહેલીવાર એપ ઓપન થઈ હોય તો જ રિકવરી ઈમેઇલ દાખલ કરવાનું બોક્સ દેખાશે
-              if (_isFirstTime) ...[
-                const SizedBox(height: 16),
-                TextField(
-                  controller: _emailController,
-                  keyboardType: TextInputType.emailAddress,
-                  decoration: InputDecoration(
-                    labelText: 'રિકવરી જીમેઇલ (પિન ભૂલી જવા પર)',
-                    hintText: 'example@gmail.com',
-                    prefixIcon: const Icon(Icons.email_outlined),
-                    filled: true,
-                    fillColor: Colors.white,
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              const SizedBox(height: 16),
+              TextField(
+                controller: _passwordController,
+                obscureText: _obscurePassword,
+                keyboardType: TextInputType.visiblePassword,
+                decoration: InputDecoration(
+                  labelText: 'માસ્ટર પાસવર્ડ (કોઈપણ કેરેક્ટર/લંબાઈ)',
+                  hintText: 'દા.ત. P@ss#2026!xyz',
+                  errorText: _errorMessage.isEmpty ? null : _errorMessage,
+                  prefixIcon: const Icon(Icons.password),
+                  suffixIcon: IconButton(
+                    icon: Icon(_obscurePassword ? Icons.visibility_off : Icons.visibility),
+                    onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
                   ),
+                  filled: true,
+                  fillColor: Colors.white,
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                 ),
-              ],
+                onSubmitted: (_) => _authenticate(),
+              ),
               const SizedBox(height: 20),
               ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(
@@ -224,16 +277,16 @@ class _AuthGateState extends State<AuthGate> {
                   foregroundColor: Colors.white,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 ),
-                onPressed: _unlockApp,
+                onPressed: _authenticate,
                 icon: const Icon(Icons.lock_open),
-                label: Text(_isFirstTime ? 'પિન સેવ કરી પ્રવેશ કરો' : 'અનલૉક કરો'),
+                label: Text(_isFirstTime ? 'એકાઉન્ટ બનાવી પ્રવેશ કરો' : 'અનલૉક કરો'),
               ),
               if (!_isFirstTime) ...[
                 const SizedBox(height: 12),
                 TextButton.icon(
-                  onPressed: _resetPinWithGoogle,
+                  onPressed: _resetPasswordWithGoogle,
                   icon: const Icon(Icons.g_mobiledata, size: 28),
-                  label: const Text('Google થી પિન રીસેટ કરો'),
+                  label: const Text('Google એકાઉન્ટ વડે પાસવર્ડ રીસેટ કરો'),
                 ),
               ],
             ],
