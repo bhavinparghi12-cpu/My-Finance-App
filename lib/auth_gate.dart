@@ -74,7 +74,6 @@ class _AuthGateState extends State<AuthGate> {
     }
 
     if (_isFirstTime) {
-      // કોઈ પણ કેરેક્ટર અને અનલિમિટેડ લંબાઈ સપોર્ટેડ
       await SecurityService.setupUserAccount(email, pwd);
       await _openUserDatabaseAndNavigate(email);
     } else {
@@ -93,7 +92,6 @@ class _AuthGateState extends State<AuthGate> {
 
   Future<void> _resetPasswordWithGoogle() async {
     try {
-      // અહીં Google Cloud માંથી મેળવેલ Web Client ID ઉમેરેલ છે
       final googleSignIn = GoogleSignIn(
         serverClientId: '821548105506-na4qjteh6kk0c87jb9n71qk65fl9gs45.apps.googleusercontent.com',
         scopes: ['email'],
@@ -103,7 +101,6 @@ class _AuthGateState extends State<AuthGate> {
 
       final currentEmail = _emailController.text.trim().toLowerCase();
 
-      // માત્ર જે તે ચોક્કસ ઈમેઈલ જ પોતાનો પાસવર્ડ રીસેટ કરી શકે
       if (currentEmail.isNotEmpty && account.email.trim().toLowerCase() != currentEmail) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -180,7 +177,6 @@ class _AuthGateState extends State<AuthGate> {
     final encKey = await SecurityService.getDatabaseKeyForEmail(email);
     final cipher = HiveAesCipher(encKey);
 
-    // દરેક ઈમેઈલ માટે અલગ આઈસોલેટેડ બોક્સ પ્રિફિક્સ
     final prefix = email.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_');
 
     final catBoxName = 'catBox_$prefix';
