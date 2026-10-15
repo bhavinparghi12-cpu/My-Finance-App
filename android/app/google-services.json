@@ -54,6 +54,14 @@
           }
         },
         {
+          "client_id": "821548105506-gu2h5put2i8o8joj7b23lnfmgd0tlpn4.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.my_finance_app",
+            "certificate_hash": "10ef0235383c7b6c4664da0d148fd29df622082f"
+          }
+        },
+        {
           "client_id": "821548105506-na4qjteh6kk0c87jb9n71qk65fl9gs45.apps.googleusercontent.com",
           "client_type": 3
         }
