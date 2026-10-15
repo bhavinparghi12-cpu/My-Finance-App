@@ -93,7 +93,11 @@ class _AuthGateState extends State<AuthGate> {
 
   Future<void> _resetPasswordWithGoogle() async {
     try {
-      final googleSignIn = GoogleSignIn();
+      // અહીં Google Cloud માંથી મેળવેલ Web Client ID ઉમેરેલ છે
+      final googleSignIn = GoogleSignIn(
+        serverClientId: '821548105506-na4qjteh6kk0c87jb9n71qk65fl9gs45.apps.googleusercontent.com',
+        scopes: ['email'],
+      );
       final account = await googleSignIn.signIn();
       if (account == null) return;
 
