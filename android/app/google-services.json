@@ -14,6 +14,14 @@
       },
       "oauth_client": [
         {
+          "client_id": "821548105506-1eredhql2pgmm2oo4cft0pqvaio72t8v.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.my_finance_app",
+            "certificate_hash": "89bc3b5f0a5c5a59f804c50936d969fd355cb35c"
+          }
+        },
+        {
           "client_id": "821548105506-43ul92arbpovu1eeskidllsdjig48gcg.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
@@ -27,6 +35,22 @@
           "android_info": {
             "package_name": "com.example.my_finance_app",
             "certificate_hash": "6b445c8796528bfcc2f54ab0953a8c886cf40847"
+          }
+        },
+        {
+          "client_id": "821548105506-c98h88b2c4ks2nuhobm3ggt5hrm30rj6.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.my_finance_app",
+            "certificate_hash": "16dc39bedb24d9b48d8388253f9fd46dbd4789b6"
+          }
+        },
+        {
+          "client_id": "821548105506-e9elndr4qeum5diostfac4hvndb8bva9.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.my_finance_app",
+            "certificate_hash": "d4d47c1ae6a4404fd162d77045fb01530ed281e6"
           }
         },
         {
