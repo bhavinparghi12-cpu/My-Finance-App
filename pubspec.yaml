@@ -20,7 +20,8 @@ dependencies:
   flutter_secure_storage: ^9.2.2
   crypto: ^3.0.3
 
-  # ઓથેન્ટિકેશન
+  # ઓથેન્ટિકેશન (રીસેટ લિંક માટે firebase_auth અહીં ઉમેર્યું છે)
+  firebase_auth: ^5.0.0
   google_sign_in: ^6.2.1
 
   # ફાઇલ એક્સપોર્ટ અને શેરિંગ
@@ -40,10 +41,6 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-
-  assets:
-    - assets/fonts/NotoSansGujarati-Regular.ttf
-    - assets/fonts/NotoSansGujarati-Bold.ttf
 
   fonts:
     - family: NotoSansGujarati
