@@ -41,11 +41,6 @@ jobs:
           mkdir -p assets/fonts
           ls -la assets/fonts/ || true
 
-      - name: Setup Fixed Keystore and Verify SHA-1
-        run: |
-          mkdir -p ~/.android
-          cp android/app/debug.keystore ~/.android/debug.keystore
-          keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android | grep "SHA1:"
           
       - name: Build Android Release APK
         run: flutter build apk --release --no-tree-shake-icons
