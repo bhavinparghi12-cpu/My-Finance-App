@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import 'package:google_sign_in/google_sign_in.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'security_service.dart';
 import 'main.dart';
 
@@ -90,84 +90,68 @@ class _AuthGateState extends State<AuthGate> {
     }
   }
 
-  Future<void> _resetPasswordWithGoogle() async {
-    try {
-      final googleSignIn = GoogleSignIn(
-  scopes: ['email'],
-);
+  // --- પાસવર્ડ રીસેટ લિંક મોકલવાનું ફંક્શન ---
+  Future<void> _sendResetPasswordLink() async {
+    final email = _emailController.text.trim().toLowerCase();
 
-      final account = await googleSignIn.signIn();
-      if (account == null) return;
-
-      final currentEmail = _emailController.text.trim().toLowerCase();
-
-      if (currentEmail.isNotEmpty && account.email.trim().toLowerCase() != currentEmail) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            backgroundColor: Colors.red,
-            content: Text('અનધિકૃત એકાઉન્ટ! ફક્ત $currentEmail વડે જ પાસવર્ડ રીસેટ થઈ શકે.'),
-          ),
-        );
-        return;
-      }
-
-      if (!mounted) return;
-      final newPwdController = TextEditingController();
-      bool obscureNew = true;
-
-      await showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (ctx) => StatefulBuilder(
-          builder: (context, setDlgState) => AlertDialog(
-            title: const Text('નવો માસ્ટર પાસવર્ડ સેટ કરો'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('ચકાસાયેલ એકાઉન્ટ: ${account.email}', style: const TextStyle(fontWeight: FontWeight.bold)),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: newPwdController,
-                  obscureText: obscureNew,
-                  decoration: InputDecoration(
-                    labelText: 'નવો સુરક્ષિત પાસવર્ડ (કોઈપણ લંબાઈ)',
-                    border: const OutlineInputBorder(),
-                    suffixIcon: IconButton(
-                      icon: Icon(obscureNew ? Icons.visibility_off : Icons.visibility),
-                      onPressed: () => setDlgState(() => obscureNew = !obscureNew),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ કરો')),
-              ElevatedButton(
-                onPressed: () async {
-                  final newPwd = newPwdController.text;
-                  if (newPwd.isNotEmpty) {
-                    await SecurityService.resetPassword(account.email, newPwd);
-                    if (ctx.mounted) Navigator.pop(ctx);
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('પાસવર્ડ સફળતાપૂર્વક બદલાઈ ગયો છે!')),
-                      );
-                    }
-                  }
-                },
-                child: const Text('સેવ કરો'),
-              ),
-            ],
-          ),
+    if (email.isEmpty || !email.contains('@') || !email.contains('.')) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          backgroundColor: Colors.red,
+          content: Text('કૃપા કરીને માન્ય ઈમેઈલ એડ્રેસ દાખલ કરો.'),
         ),
       );
-      newPwdController.dispose();
+      return;
+    }
+
+    try {
+      // Firebase Authentication દ્વારા રીસેટ લિંક ઈમેલ મોકલવો
+      await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
+
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Row(
+            children: [
+              Icon(Icons.mark_email_read, color: Colors.teal),
+              SizedBox(width: 8),
+              Text('રીસેટ લિંક મોકલાઈ ગઈ', style: TextStyle(fontSize: 18)),
+            ],
+          ),
+          content: Text(
+            '$email પર પાસવર્ડ રીસેટ કરવાની લિંક મોકલવામાં આવી છે.\n\nકૃપા કરીને તમારું Gmail/ઇનબોક્સ (અથવા Spam ફોલ્ડર) તપાસો અને તેમાં આપેલી લિંક પર ક્લિક કરીને નવો પાસવર્ડ સેટ કરો.',
+            style: const TextStyle(fontSize: 14),
+          ),
+          actions: [
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.teal,
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('સમજાઈ ગયું'),
+            ),
+          ],
+        ),
+      );
+    } on FirebaseAuthException catch (e) {
+      String msg = 'લિંક મોકલવામાં ભૂલ આવી.';
+      if (e.code == 'user-not-found') {
+        msg = 'આ ઈમેઈલ ધરાવતું કોઈ એકાઉન્ટ મળ્યું નથી.';
+      } else if (e.code == 'invalid-email') {
+        msg = 'ઈમેઈલ એડ્રેસ અમાન્ય છે.';
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(backgroundColor: Colors.red, content: Text(msg)),
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Google સાઈન-ઇન નિષ્ફળ: $e')),
+          SnackBar(backgroundColor: Colors.red, content: Text('એરર: $e')),
         );
       }
     }
@@ -176,7 +160,6 @@ class _AuthGateState extends State<AuthGate> {
   Future<void> _openUserDatabaseAndNavigate(String email) async {
     final encKey = await SecurityService.getDatabaseKeyForEmail(email);
     final cipher = HiveAesCipher(encKey);
-
     final prefix = email.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_');
 
     final catBoxName = 'catBox_$prefix';
@@ -284,9 +267,16 @@ class _AuthGateState extends State<AuthGate> {
               if (!_isFirstTime) ...[
                 const SizedBox(height: 12),
                 TextButton.icon(
-                  onPressed: _resetPasswordWithGoogle,
-                  icon: const Icon(Icons.g_mobiledata, size: 28),
-                  label: const Text('Google એકાઉન્ટ વડે પાસવર્ડ રીસેટ કરો'),
+                  onPressed: _sendResetPasswordLink,
+                  icon: const Icon(Icons.lock_reset, size: 22, color: Colors.teal),
+                  label: const Text(
+                    'પાસવર્ડ ભૂલી ગયા છો? (લિંક વડે રીસેટ કરો)',
+                    style: TextStyle(
+                      color: Colors.teal,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                    ),
+                  ),
                 ),
               ],
             ],
