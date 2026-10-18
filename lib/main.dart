@@ -13,18 +13,35 @@ final ValueNotifier<String?> appBackgroundImage = ValueNotifier<String?>(null);
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
-  await Hive.initFlutter();
 
-  await Hive.openBox('settingsBox');
-  final settings = Hive.box('settingsBox');
+  // ૧. Firebase સુરક્ષિત રીતે શરૂ કરો
+  try {
+    await Firebase.initializeApp();
+  } catch (e) {
+    debugPrint("Firebase Init Error: $e");
+  }
 
-  final savedColor = settings.get('primaryColor', defaultValue: Colors.teal.toARGB32());
-  final savedImage = settings.get('backgroundImage', defaultValue: null);
+  // ૨. Hive સુરક્ષિત રીતે શરૂ કરો
+  try {
+    await Hive.initFlutter();
+    final settings = await Hive.openBox('settingsBox');
 
-  appSeedColor.value = Color(savedColor);
-  appBackgroundImage.value = savedImage;
+    final dynamic rawColor = settings.get('primaryColor');
+    if (rawColor != null && rawColor is int) {
+      appSeedColor.value = Color(rawColor);
+    } else {
+      appSeedColor.value = Colors.teal;
+    }
 
+    final dynamic rawImage = settings.get('backgroundImage');
+    if (rawImage != null && rawImage is String) {
+      appBackgroundImage.value = rawImage;
+    }
+  } catch (e) {
+    debugPrint("Hive Init Error: $e");
+  }
+
+  // ૩. કોઈપણ સંજોગોમાં runApp રન થવું જ જોઈએ
   runApp(const FinanceApp());
 }
 
