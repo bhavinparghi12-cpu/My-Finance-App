@@ -77,7 +77,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   late Box accountsBox;
   late Box transactionsBox;
   late Box settingsBox;
-  late Box budgetBox;
+  Box? budgetBox;
+  bool _isBudgetReady = false;
 
   TimeFilter selectedFilter = TimeFilter.monthly;
   DateTimeRange? customDateRange;
@@ -93,13 +94,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
     transactionsBox = Hive.box(widget.txBoxName);
     settingsBox = Hive.box('settingsBox');
 
-    final prefix = widget.userEmail.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_');
-    budgetBox = Hive.isBoxOpen('budgetBox_$prefix')
-        ? Hive.box('budgetBox_$prefix')
-        : Hive.openBox('budgetBox_$prefix') as dynamic;
+    _initBudgetBox();
 
     if (categoriesBox.isEmpty) _saveDefaultCategories();
     if (accountsBox.isEmpty) _saveDefaultAccounts();
+  }
+
+  Future<void> _initBudgetBox() async {
+    final prefix = widget.userEmail.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_');
+    final bName = 'budgetBox_$prefix';
+    if (!Hive.isBoxOpen(bName)) {
+      budgetBox = await Hive.openBox(bName);
+    } else {
+      budgetBox = Hive.box(bName);
+    }
+    if (mounted) {
+      setState(() {
+        _isBudgetReady = true;
+      });
+    }
   }
 
   void _saveDefaultCategories() {
@@ -132,7 +145,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<Map<dynamic, dynamic>> get accounts =>
       accountsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
 
-  // ખાતાની વાસ્તવિક સિલક (Opening Balance + Transactions)
   double getAccountCurrentBalance(String accountId) {
     final acc = accounts.firstWhere((a) => a['id'].toString() == accountId, orElse: () => {});
     double balance = (acc['openingBalance'] as num?)?.toDouble() ?? 0.0;
@@ -219,7 +231,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         });
   }
 
-  // --- એકાઉન્ટ મેનેજર અને પ્રારંભિક રકમ ડાયલોગ ---
   void _openAccountManager() {
     showDialog(
       context: context,
@@ -355,15 +366,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- બજેટ આયોજન ડાયલોગ (Budget Planning) ---
   void _openBudgetPlannerDialog() {
-    final prefix = widget.userEmail.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_');
-    final bBox = Hive.box('budgetBox_$prefix');
+    if (budgetBox == null) return;
 
     String period = 'માસિક બજેટ (Monthly)';
-    final expenseBudgetCtrl = TextEditingController(text: bBox.get('budgetExpense', defaultValue: 0.0).toString());
-    final investmentBudgetCtrl = TextEditingController(text: bBox.get('budgetInvestment', defaultValue: 0.0).toString());
-    final savingsBudgetCtrl = TextEditingController(text: bBox.get('budgetSavings', defaultValue: 0.0).toString());
+    final expenseBudgetCtrl = TextEditingController(text: budgetBox!.get('budgetExpense', defaultValue: 0.0).toString());
+    final investmentBudgetCtrl = TextEditingController(text: budgetBox!.get('budgetInvestment', defaultValue: 0.0).toString());
+    final savingsBudgetCtrl = TextEditingController(text: budgetBox!.get('budgetSavings', defaultValue: 0.0).toString());
 
     showDialog(
       context: context,
@@ -412,9 +421,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ કરો')),
           ElevatedButton(
             onPressed: () {
-              bBox.put('budgetExpense', double.tryParse(expenseBudgetCtrl.text) ?? 0.0);
-              bBox.put('budgetInvestment', double.tryParse(investmentBudgetCtrl.text) ?? 0.0);
-              bBox.put('budgetSavings', double.tryParse(savingsBudgetCtrl.text) ?? 0.0);
+              budgetBox!.put('budgetExpense', double.tryParse(expenseBudgetCtrl.text) ?? 0.0);
+              budgetBox!.put('budgetInvestment', double.tryParse(investmentBudgetCtrl.text) ?? 0.0);
+              budgetBox!.put('budgetSavings', double.tryParse(savingsBudgetCtrl.text) ?? 0.0);
               setState(() {});
               Navigator.pop(ctx);
             },
@@ -425,7 +434,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- ડાયનેમિક ચાર્ટ વિજેટ (વર્તુળ, સ્તંભ, રેખિક આલેખ) ---
   Widget _buildDynamicChart() {
     final Map<String, double> categorySums = {};
     for (var tx in filteredTransactions) {
@@ -442,7 +450,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     Widget chartWidget;
 
     if (selectedChartType == ChartType.pie) {
-      // ૧. વર્તુળ આલેખ (Pie Chart)
       int cIdx = 0;
       final sections = entries.map((e) {
         final col = colors[cIdx % colors.length];
@@ -460,7 +467,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         PieChartData(sections: sections, centerSpaceRadius: 35, sectionsSpace: 2),
       );
     } else if (selectedChartType == ChartType.bar) {
-      // ૨. સ્તંભ આલેખ (Bar Chart)
       final barGroups = List.generate(entries.length, (i) {
         return BarChartGroupData(
           x: i,
@@ -504,7 +510,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
       );
     } else {
-      // ૩. રેખિક આલેખ (Line Chart)
       final spots = List.generate(entries.length, (i) => FlSpot(i.toDouble(), entries[i].value));
       chartWidget = LineChart(
         LineChartData(
@@ -514,7 +519,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               isCurved: true,
               color: Colors.teal,
               barWidth: 3,
-              belowBarData: BarAreaData(show: true, color: Colors.teal.withValues(alpha: 0.2)),
+              belowBarData: BarAreaData(show: true, color: Colors.teal.withOpacity(0.2)),
               dotData: const FlDotData(show: true),
             ),
           ],
@@ -556,11 +561,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- બજેટ લક્ષ્યાંક પ્રગતિ પટ્ટી કાર્ડ ---
   Widget _buildBudgetSummaryCard(double currentExpense, double currentInvestment, double currentSavings) {
-    final prefix = widget.userEmail.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_');
-    final bBox = Hive.box('budgetBox_$prefix');
-    final budgetExpense = bBox.get('budgetExpense', defaultValue: 0.0) as double;
+    if (!_isBudgetReady || budgetBox == null) return const SizedBox();
+    final budgetExpense = (budgetBox!.get('budgetExpense', defaultValue: 0.0) as num).toDouble();
 
     if (budgetExpense <= 0) return const SizedBox();
 
@@ -598,11 +601,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildSummaryCard(String title, double amount, Color color) {
     return Expanded(
       child: Card(
-        color: color.withValues(alpha: 0.12),
+        color: color.withOpacity(0.12),
         elevation: 0,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(10),
-          side: BorderSide(color: color.withValues(alpha: 0.3)),
+          side: BorderSide(color: color.withOpacity(0.3)),
         ),
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 10.0, horizontal: 6.0),
@@ -632,7 +635,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             height: 350,
             child: ListView.builder(
               itemCount: categories.length,
-              itemBuilder: (context, i) {
+              itemBuilder: (context, i) { // 👈 itemBui ની ભૂલ સુધારી લીધી છે
                 final c = categories[i];
                 return ListTile(
                   dense: true,
@@ -1136,7 +1139,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           margin: const EdgeInsets.symmetric(vertical: 4),
                           child: ListTile(
                             leading: CircleAvatar(
-                              backgroundColor: amountColor.withValues(alpha: 0.15),
+                              backgroundColor: amountColor.withOpacity(0.15),
                               child: Icon(
                                 isIncome ? Icons.arrow_downward : (isExpense ? Icons.arrow_upward : Icons.trending_up),
                                 color: amountColor,
