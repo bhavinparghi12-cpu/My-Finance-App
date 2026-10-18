@@ -19,7 +19,7 @@ void main() async {
   await Hive.openBox('settingsBox');
   final settings = Hive.box('settingsBox');
 
-  final savedColor = settings.get('primaryColor', defaultValue: Colors.teal.value);
+  final savedColor = settings.get('primaryColor', defaultValue: Colors.teal.toARGB32());
   final savedImage = settings.get('backgroundImage', defaultValue: null);
 
   appSeedColor.value = Color(savedColor);
@@ -117,10 +117,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   void _saveDefaultCategories() {
     final defaultCats = [
-      {'id': '1', 'name': 'ઘરખર્ચ (Expense)', 'effect': 'expenseDebit', 'color': Colors.redAccent.value},
-      {'id': '2', 'name': 'પગાર / વ્યવસાય આવક', 'effect': 'incomeCredit', 'color': Colors.green.value},
-      {'id': '3', 'name': 'શેરબજાર / મ્યુચ્યુઅલ ફંડ રોકાણ', 'effect': 'assetIncrease', 'color': Colors.blue.value},
-      {'id': '4', 'name': 'લોન હપ્તો (EMI Payment)', 'effect': 'loanRepay', 'color': Colors.orange.value},
+      {'id': '1', 'name': 'ઘરખર્ચ (Expense)', 'effect': 'expenseDebit', 'color': Colors.redAccent.toARGB32()},
+      {'id': '2', 'name': 'પગાર / વ્યવસાય આવક', 'effect': 'incomeCredit', 'color': Colors.green.toARGB32()},
+      {'id': '3', 'name': 'શેરબજાર / મ્યુચ્યુઅલ ફંડ રોકાણ', 'effect': 'assetIncrease', 'color': Colors.blue.toARGB32()},
+      {'id': '4', 'name': 'લોન હપ્તો (EMI Payment)', 'effect': 'loanRepay', 'color': Colors.orange.toARGB32()},
     ];
     for (var cat in defaultCats) {
       categoriesBox.put(cat['id'], cat);
@@ -322,7 +322,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<String>(
-                value: type,
+                initialValue: type, // 👈 'value' ની જગ્યાએ 'initialValue' સુધાર્યું
                 isExpanded: true,
                 decoration: const InputDecoration(labelText: 'ખાતાનો પ્રકાર'),
                 items: accountTypes.map((t) => DropdownMenuItem(value: t, child: Text(t, style: const TextStyle(fontSize: 13)))).toList(),
@@ -519,7 +519,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               isCurved: true,
               color: Colors.teal,
               barWidth: 3,
-              belowBarData: BarAreaData(show: true, color: Colors.teal.withOpacity(0.2)),
+              belowBarData: BarAreaData(show: true, color: Colors.teal.withValues(alpha: 0.2)),
               dotData: const FlDotData(show: true),
             ),
           ],
@@ -601,11 +601,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildSummaryCard(String title, double amount, Color color) {
     return Expanded(
       child: Card(
-        color: color.withOpacity(0.12),
+        color: color.withValues(alpha: 0.12), // 👈 withValues(alpha:) સુધાર્યું
         elevation: 0,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(10),
-          side: BorderSide(color: color.withOpacity(0.3)),
+          side: BorderSide(color: color.withValues(alpha: 0.3)),
         ),
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 10.0, horizontal: 6.0),
@@ -635,7 +635,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             height: 350,
             child: ListView.builder(
               itemCount: categories.length,
-              itemBuilder: (context, i) { // 👈 itemBui ની ભૂલ સુધારી લીધી છે
+              itemBuilder: (context, i) {
                 final c = categories[i];
                 return ListTile(
                   dense: true,
@@ -718,7 +718,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   'id': id,
                   'name': nameCtrl.text,
                   'effect': effect,
-                  'color': col.value,
+                  'color': col.toARGB32(), // 👈 .toARGB32() સુધાર્યું
                 });
                 setState(() {});
                 Navigator.pop(ctx);
@@ -897,7 +897,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 return GestureDetector(
                   onTap: () {
                     appSeedColor.value = c;
-                    settingsBox.put('primaryColor', c.value);
+                    settingsBox.put('primaryColor', c.toARGB32()); // 👈 .toARGB32() સુધાર્યું
                     Navigator.pop(ctx);
                   },
                   child: CircleAvatar(backgroundColor: c, radius: 18),
@@ -1139,7 +1139,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           margin: const EdgeInsets.symmetric(vertical: 4),
                           child: ListTile(
                             leading: CircleAvatar(
-                              backgroundColor: amountColor.withOpacity(0.15),
+                              backgroundColor: amountColor.withValues(alpha: 0.15), // 👈 withValues(alpha:) સુધાર્યું
                               child: Icon(
                                 isIncome ? Icons.arrow_downward : (isExpense ? Icons.arrow_upward : Icons.trending_up),
                                 color: amountColor,
