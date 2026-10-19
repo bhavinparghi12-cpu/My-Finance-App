@@ -16,7 +16,14 @@ void main() async {
 
   // ૧. Firebase સુરક્ષિત રીતે શરૂ કરો
   try {
-    await Firebase.initializeApp();
+    await Firebase.initializeApp(
+      options: const FirebaseOptions(
+        apiKey: "AIzaSyDiFtQz7lhwXTAN3gOWg2N-LJOQ9ACZN44",
+        appId: "1:821548105506:android:9f2408030e323b32482f7b",
+        messagingSenderId: "821548105506",
+        projectId: "my-finance-app-f4664",
+      ),
+    );
   } catch (e) {
     debugPrint("Firebase Init Error: $e");
   }
