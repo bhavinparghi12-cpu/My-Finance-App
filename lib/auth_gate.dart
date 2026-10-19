@@ -59,6 +59,7 @@ class _AuthGateState extends State<AuthGate> {
     }
   }
 
+  // --- સુધારેલ ઓથેન્ટિકેશન ફંક્શન (Firebase + Local Sync) ---
   Future<void> _authenticate() async {
     final email = _emailController.text.trim().toLowerCase();
     final pwd = _passwordController.text;
@@ -73,17 +74,65 @@ class _AuthGateState extends State<AuthGate> {
       return;
     }
 
-    if (_isFirstTime) {
-      await SecurityService.setupUserAccount(email, pwd);
-      await _openUserDatabaseAndNavigate(email);
-    } else {
+    setState(() => _errorMessage = '');
+
+    try {
+      if (_isFirstTime) {
+        // ૧. Firebase Authentication પર એકાઉન્ટ બનાવો
+        try {
+          await FirebaseAuth.instance.createUserWithEmailAndPassword(
+            email: email,
+            password: pwd,
+          );
+        } on FirebaseAuthException catch (e) {
+          // જો Firebase પર પહેલેથી એકાઉન્ટ હોય તો સાઇન-ઇન કરીને આગળ વધો
+          if (e.code == 'email-already-in-use') {
+            await FirebaseAuth.instance.signInWithEmailAndPassword(
+              email: email,
+              password: pwd,
+            );
+          } else {
+            rethrow;
+          }
+        }
+
+        // ૨. લોકલ સ્ટોરેજ સેટઅપ કરો
+        await SecurityService.setupUserAccount(email, pwd);
+        await _openUserDatabaseAndNavigate(email);
+      } else {
+        // ૩. લૉગિન વખતે Firebase દ્વારા પાસવર્ડ ચકાસો (જેથી લિંક વડે બદલાયેલો પાસવર્ડ માન્ય રહે)
+        await FirebaseAuth.instance.signInWithEmailAndPassword(
+          email: email,
+          password: pwd,
+        );
+
+        // ૪. Firebase માં લૉગિન સફળ થાય એટલે લોકલ સ્ટોરેજમાં પણ નવો પાસવર્ડ અપડેટ કરી દો
+        await SecurityService.resetPassword(email, pwd);
+        await SecurityService.setLastActiveEmail(email);
+        await _openUserDatabaseAndNavigate(email);
+      }
+    } on FirebaseAuthException catch (e) {
+      setState(() {
+        if (e.code == 'wrong-password' || e.code == 'invalid-credential') {
+          _errorMessage = 'ખોટો પાસવર્ડ! કૃપા કરીને નવો સેટ કરેલો પાસવર્ડ દાખલ કરો.';
+        } else if (e.code == 'user-not-found') {
+          _errorMessage = 'આ ઈમેઈલ વાળું એકાઉન્ટ મળ્યું નથી.';
+        } else if (e.code == 'network-request-failed') {
+          _errorMessage = 'ઇન્ટરનેટ કનેક્શન તપાસો.';
+        } else {
+          _errorMessage = e.message ?? 'ઓથેન્ટિકેશન નિષ્ફળ.';
+        }
+        _passwordController.clear();
+      });
+    } catch (e) {
+      // જો ઈન્ટરનેટ ન હોય તો લોકલ પાસવર્ડ દ્વારા ઓફલાઈન બેકઅપ વેરિફિકેશન
       final isValid = await SecurityService.verifyPassword(email, pwd);
       if (isValid) {
         await SecurityService.setLastActiveEmail(email);
         await _openUserDatabaseAndNavigate(email);
       } else {
         setState(() {
-          _errorMessage = 'ખોટો પાસવર્ડ! કૃપા કરીને ફરી પ્રયાસ કરો.';
+          _errorMessage = 'ખોટો પાસવર્ડ અથવા નેટવર્ક એરર.';
           _passwordController.clear();
         });
       }
