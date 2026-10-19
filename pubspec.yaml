@@ -1,7 +1,7 @@
 name: my_finance_app
 description: "A secure personal finance and investment management app."
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.1+2 # 👈 વર્ઝન અપડેટ કર્યું જેથી GitHub Actions નવી APK બિલ્ડ કરે અને ફોનમાં નવો સુધારો તરત દેખાય
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -13,6 +13,9 @@ dependencies:
   # UI અને ચાર્ટ્સ
   intl: ^0.19.0
   fl_chart: ^0.68.0
+
+  # લાઈવ API અને RSS ન્યૂઝ ફેચિંગ (મ્યુચ્યુઅલ ફંડ એનાલિસિસ માટે)
+  http: ^1.2.0 # 👈 નવું ઉમેર્યું
 
   # ડેટાબેઝ અને સુરક્ષા
   hive: ^2.2.3
