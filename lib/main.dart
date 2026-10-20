@@ -1082,9 +1082,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    final assetGain = _calculateTotal('assetIncrease');
-    final totalExpense = _calculateTotal('expenseDebit') + _calculateTotal('loanRepay');
-    final totalIncome = _calculateTotal('incomeCredit');
+    //final assetGain = _calculateTotal('assetIncrease');
+    //final totalExpense = _calculateTotal('expenseDebit') + _calculateTotal('loanRepay');
+    //final totalIncome = _calculateTotal('incomeCredit');
 
     final List<int> fyYears = List.generate(111, (index) => 1990 + index);
 
