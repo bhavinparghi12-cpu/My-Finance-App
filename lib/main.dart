@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import 'package:image_picker/image_picker.dart';
+//import 'package:image_picker/image_picker.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:http/http.dart' as http;
 import 'auth_gate.dart';
@@ -677,7 +677,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'ખાતાનું નામ (દા.ત. SBI, HDFC)')),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
-                  InitialValue: type,
+                  initialValue: type,
                   isExpanded: true,
                   decoration: const InputDecoration(labelText: 'ખાતાનો પ્રકાર'),
                   items: accountTypes.map((t) => DropdownMenuItem(value: t, child: Text(t, style: const TextStyle(fontSize: 12)))).toList(),
