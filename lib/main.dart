@@ -161,8 +161,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
   double stockTarget = 3151.0;
   String stockNewsSentiment = "🟢 તેજીમય સમાચાર (મજબૂત રિટેલ & 5G ગ્રોથ)";
   List<FlSpot> stockChartSpots = const [
-    FlSpot(0, 2650), FlSpot(1, 2690), FlSpot(2, 2670),
-    FlSpot(3, 2720), FlSpot(4, 2710), FlSpot(5, 2740)
+    FlSpot(0, 2650),
+    FlSpot(1, 2690),
+    FlSpot(2, 2670),
+    FlSpot(3, 2720),
+    FlSpot(4, 2710),
+    FlSpot(5, 2740)
   ];
 
   // કિંમતી ધાતુઓ શહેર રેટ્સ (લાઈવ અંદાજિત બજાર ભાવ)
@@ -243,6 +247,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<Map<dynamic, dynamic>> get accounts =>
       accountsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
 
+  double _parseAmt(dynamic value) {
+    if (value is num) return value.toDouble();
+    if (value != null) return double.tryParse(value.toString()) ?? 0.0;
+    return 0.0;
+  }
+
   void _processAutoPayAndSIP() {
     final now = DateTime.now();
     final allAuto = autoPayBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
@@ -250,10 +260,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     for (var item in allAuto) {
       if (item['isActive'] != true) continue;
 
-      final int day = item['day'] ?? 1;
-      final double amt = (item['amount'] as num).toDouble();
-      final String type = item['type'];
-      final String fromAccId = item['fromAccountId'];
+      final int day = int.tryParse(item['day']?.toString() ?? '1') ?? 1;
+      final double amt = _parseAmt(item['amount']);
+      final String type = item['type'] ?? 'SIP';
+      final String fromAccId = item['fromAccountId']?.toString() ?? '';
       final String toTarget = item['toTarget'] ?? '';
       final String lastExecution = item['lastProcessed'] ?? '';
 
@@ -286,12 +296,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   double getAccountCurrentBalance(String accountId) {
     final acc = accounts.firstWhere((a) => a['id'].toString() == accountId, orElse: () => {});
-    double balance = (acc['openingBalance'] as num?)?.toDouble() ?? 0.0;
+    if (acc.isEmpty) return 0.0;
+    double balance = _parseAmt(acc['openingBalance']);
 
     final allTx = transactionsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
     for (var tx in allTx) {
-      if (tx['accountId'] == accountId) {
-        final amt = (tx['amount'] as num).toDouble();
+      if (tx['accountId'].toString() == accountId) {
+        final amt = _parseAmt(tx['amount']);
         final effect = tx['categoryEffect'];
         if (effect == 'incomeCredit') {
           balance += amt;
@@ -311,10 +322,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final allTx = transactionsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
 
     return allTx.where((tx) {
-      final date = DateTime.parse(tx['date']);
+      final date = DateTime.tryParse(tx['date']?.toString() ?? '') ?? now;
       if (date.isBefore(fyStart) || date.isAfter(fyEnd)) return false;
 
-      if (selectedAccountId != null && tx['accountId'] != selectedAccountId) {
+      if (selectedAccountId != null && tx['accountId']?.toString() != selectedAccountId) {
         return false;
       }
 
@@ -356,14 +367,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   double _calculateTotal(String effect) {
     return filteredTransactions
         .where((t) => t['categoryEffect'] == effect)
-        .fold(0.0, (sum, item) {
-          final amt = item['amount'];
-          if (amt is num) return sum + amt.toDouble();
-          return sum + (double.tryParse(amt?.toString() ?? '0') ?? 0.0);
-        });
+        .fold(0.0, (sum, item) => sum + _parseAmt(item['amount']));
   }
 
-  // --- લાઈવ મ્યુચ્યુઅલ ફંડ એનાલિસિસ ---
   Future<void> _fetchAndAnalyzeMf(String fundQuery) async {
     if (fundQuery.trim().isEmpty) return;
     setState(() => _isMfLoading = true);
@@ -413,10 +419,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     marketStatus = estimatedNavImpact > 1.0 ? "🟢 મજબૂત તેજી (Bullish Alert)" : "⚪ સામાન્ય ગતિ (Range Bound)";
     statusColor = estimatedNavImpact > 1.0 ? Colors.green : Colors.blue;
     lastMfUpdatedTime = DateFormat('hh:mm a').format(DateTime.now());
-    setState(() => _isMfLoading = false);
+    if (mounted) {
+      setState(() => _isMfLoading = false);
+    }
   }
 
-  // --- સ્ટોક લેવલ્સ & ટેકનિકલ ટાર્ગેટ ---
   void _calculateStockLevels(String stockName, double? userPrice) {
     final name = stockName.trim().toUpperCase();
     double price = userPrice ?? 0.0;
@@ -452,10 +459,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       FlSpot(5, price),
     ];
 
-    setState(() {});
+    if (mounted) setState(() {});
   }
 
-  // --- એપ સેટિંગ્સ ડાયલોગ ---
   void _openSettingsDialog() {
     showModalBottomSheet(
       context: context,
@@ -572,7 +578,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- ૧. ખાતાઓ મેનેજ કરવાનો સંપૂર્ણ ડાયલોગ ---
   void _openAccountManager() {
     showDialog(
       context: context,
@@ -603,17 +608,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 icon: const Icon(Icons.edit, size: 18, color: Colors.teal),
                                 tooltip: 'સુધારો',
                                 onPressed: () {
-                                  _openAccountEditDialog(account: a, onSaved: () {
-                                    setDlgState(() {});
-                                    setState(() {});
-                                  });
+                                  _openAccountEditDialog(
+                                    account: a,
+                                    onSaved: () {
+                                      setDlgState(() {});
+                                      setState(() {});
+                                    },
+                                  );
                                 },
                               ),
                               IconButton(
                                 icon: const Icon(Icons.delete, size: 18, color: Colors.red),
                                 tooltip: 'કાઢી નાખો',
-                                onPressed: () {
-                                  accountsBox.delete(a['id']);
+                                onPressed: () async {
+                                  await accountsBox.delete(a['id']);
                                   setDlgState(() {});
                                   setState(() {});
                                 },
@@ -644,9 +652,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   void _openAccountEditDialog({Map<dynamic, dynamic>? account, VoidCallback? onSaved}) {
-    final nameCtrl = TextEditingController(text: account != null ? account['name'] : '');
+    final nameCtrl = TextEditingController(text: account != null ? account['name']?.toString() : '');
     final openingBalCtrl = TextEditingController(text: account != null ? (account['openingBalance']?.toString() ?? '0') : '0');
-    String type = account != null ? (account['type'] ?? 'સેવિંગ્સ એકાઉન્ટ (Savings A/C)') : 'સેવિંગ્સ એકાઉન્ટ (Savings A/C)';
+    String type = account != null ? (account['type']?.toString() ?? 'સેવિંગ્સ એકાઉન્ટ (Savings A/C)') : 'સેવિંગ્સ એકાઉન્ટ (Savings A/C)';
 
     final accountTypes = [
       'સેવિંગ્સ એકાઉન્ટ (Savings A/C)',
@@ -692,7 +700,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ElevatedButton(
               onPressed: () {
                 if (nameCtrl.text.trim().isNotEmpty) {
-                  final id = account != null ? account['id'] : 'acc_${DateTime.now().millisecondsSinceEpoch}';
+                  final id = account != null ? account['id'].toString() : 'acc_${DateTime.now().millisecondsSinceEpoch}';
                   accountsBox.put(id, {
                     'id': id,
                     'name': nameCtrl.text.trim(),
@@ -712,7 +720,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- ૨. ઓટો-પે / SIP / EMI મેનેજર (સંપૂર્ણ એડિટ અને ડિલીટ સાથે) ---
   void _openAutoPayManager() {
     showDialog(
       context: context,
@@ -753,8 +760,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 ),
                                 IconButton(
                                   icon: const Icon(Icons.delete, size: 18, color: Colors.red),
-                                  onPressed: () {
-                                    autoPayBox.delete(a['id']);
+                                  onPressed: () async {
+                                    await autoPayBox.delete(a['id']);
                                     setDlgState(() {});
                                     setState(() {});
                                   },
@@ -783,12 +790,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   void _openAutoPayEditDialog({Map<dynamic, dynamic>? existingItem, VoidCallback? onSaved}) {
-    final targetCtrl = TextEditingController(text: existingItem != null ? existingItem['toTarget'] : '');
-    final amtCtrl = TextEditingController(text: existingItem != null ? existingItem['amount'].toString() : '');
-    final dayCtrl = TextEditingController(text: existingItem != null ? existingItem['day'].toString() : '5');
-    String type = existingItem != null ? existingItem['type'] : 'SIP';
+    final targetCtrl = TextEditingController(text: existingItem != null ? existingItem['toTarget']?.toString() : '');
+    final amtCtrl = TextEditingController(text: existingItem != null ? existingItem['amount']?.toString() : '');
+    final dayCtrl = TextEditingController(text: existingItem != null ? existingItem['day']?.toString() : '5');
+    String type = existingItem != null ? existingItem['type']?.toString() ?? 'SIP' : 'SIP';
     String fromAccId = existingItem != null
-        ? existingItem['fromAccountId']
+        ? existingItem['fromAccountId']?.toString() ?? ''
         : (accounts.isNotEmpty ? accounts.first['id'].toString() : '');
 
     showDialog(
@@ -816,7 +823,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 TextField(controller: amtCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'માસિક રકમ (₹)')),
                 TextField(controller: dayCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'દર મહિનાની તારીખ (૧ થી ૨૮)')),
                 DropdownButtonFormField<String>(
-                  initialValue: fromAccId,
+                  initialValue: fromAccId.isNotEmpty ? fromAccId : (accounts.isNotEmpty ? accounts.first['id'].toString() : null),
                   decoration: const InputDecoration(labelText: 'કપાત થનાર બેંક ખાતું'),
                   items: accounts.map((a) => DropdownMenuItem(value: a['id'].toString(), child: Text(a['name']))).toList(),
                   onChanged: (v) {
@@ -830,7 +837,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ')),
             ElevatedButton(
               onPressed: () {
-                final id = existingItem != null ? existingItem['id'] : "auto_${DateTime.now().millisecondsSinceEpoch}";
+                final id = existingItem != null ? existingItem['id'].toString() : "auto_${DateTime.now().millisecondsSinceEpoch}";
                 autoPayBox.put(id, {
                   'id': id,
                   'type': type,
@@ -864,7 +871,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           height: 300,
           child: ListView.builder(
             itemCount: categories.length,
-            itemBuilder: (context, i) => ListTile(title: Text(categories[i]['name']), subtitle: Text(categories[i]['effect'])),
+            itemBuilder: (context, i) => ListTile(title: Text(categories[i]['name'] ?? ''), subtitle: Text(categories[i]['effect'] ?? '')),
           ),
         ),
         actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('પૂર્ણ'))],
@@ -872,13 +879,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- ૩. નવો દૈનિક વ્યવહાર ઉમેરવા / સુધારવાનો ડાયલોગ ---
   void _openTransactionDialog({Map<dynamic, dynamic>? existingTx}) {
-    final titleController = TextEditingController(text: existingTx != null ? existingTx['title'] : '');
-    final amountController = TextEditingController(text: existingTx != null ? existingTx['amount'].toString() : '');
-    var selectedCat = existingTx != null ? categories.firstWhere((c) => c['id'].toString() == existingTx['categoryId'], orElse: () => categories.first) : categories.first;
-    var selectedAcc = existingTx != null ? accounts.firstWhere((a) => a['id'].toString() == existingTx['accountId'], orElse: () => accounts.first) : accounts.first;
-    DateTime transactionDate = existingTx != null ? DateTime.parse(existingTx['date']) : DateTime.now();
+    final titleController = TextEditingController(text: existingTx != null ? existingTx['title']?.toString() : '');
+    final amountController = TextEditingController(text: existingTx != null ? existingTx['amount']?.toString() : '');
+    var selectedCat = existingTx != null
+        ? categories.firstWhere((c) => c['id'].toString() == existingTx['categoryId']?.toString(), orElse: () => categories.first)
+        : categories.first;
+    var selectedAcc = existingTx != null
+        ? accounts.firstWhere((a) => a['id'].toString() == existingTx['accountId']?.toString(), orElse: () => accounts.first)
+        : accounts.first;
+    DateTime transactionDate = existingTx != null ? (DateTime.tryParse(existingTx['date']?.toString() ?? '') ?? DateTime.now()) : DateTime.now();
 
     showModalBottomSheet(
       context: context,
@@ -920,12 +930,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     label: const Text('હિસાબ સેવ કરો', style: TextStyle(fontSize: 16)),
                     onPressed: () {
                       final enteredAmount = double.tryParse(amountController.text) ?? 0.0;
-                      if (enteredAmount <= 0 || titleController.text.isEmpty) return;
-                      final id = existingTx != null ? existingTx['id'] : DateTime.now().millisecondsSinceEpoch.toString();
+                      if (enteredAmount <= 0 || titleController.text.trim().isEmpty) return;
+                      final id = existingTx != null ? existingTx['id'].toString() : DateTime.now().millisecondsSinceEpoch.toString();
 
                       transactionsBox.put(id, {
                         'id': id,
-                        'title': titleController.text,
+                        'title': titleController.text.trim(),
                         'amount': enteredAmount,
                         'date': transactionDate.toIso8601String(),
                         'categoryId': selectedCat['id'],
@@ -948,7 +958,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- ૪. કેટેગરી બજેટ લક્ષ્યાંક ડાયલોગ ---
   void _openCategoryBudgetDialog() {
     showDialog(
       context: context,
@@ -963,7 +972,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               itemBuilder: (context, i) {
                 final cat = categories[i];
                 final budgetKey = 'budget_${budgetPeriod}_${cat['id']}';
-                final currentTarget = (budgetBox.get(budgetKey, defaultValue: 0.0) as num).toDouble();
+                final currentTarget = _parseAmt(budgetBox.get(budgetKey, defaultValue: 0.0));
                 final ctrl = TextEditingController(text: currentTarget > 0 ? currentTarget.toStringAsFixed(0) : '');
 
                 return ListTile(
@@ -998,12 +1007,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- ૫. અન્ય મિલકત (પ્લોટ, મકાન, જમીન) એડિટ અને ડિલીટ સાથે ---
   void _openAddPhysicalAssetDialog({Map<dynamic, dynamic>? existingAsset}) {
-    final titleCtrl = TextEditingController(text: existingAsset != null ? existingAsset['title'] : '');
-    final valueCtrl = TextEditingController(text: existingAsset != null ? existingAsset['value'].toString() : '');
-    final locCtrl = TextEditingController(text: existingAsset != null ? existingAsset['location'] : '');
-    String type = existingAsset != null ? existingAsset['type'] : 'મકાન/ફ્લેટ';
+    final titleCtrl = TextEditingController(text: existingAsset != null ? existingAsset['title']?.toString() : '');
+    final valueCtrl = TextEditingController(text: existingAsset != null ? existingAsset['value']?.toString() : '');
+    final locCtrl = TextEditingController(text: existingAsset != null ? existingAsset['location']?.toString() : '');
+    String type = existingAsset != null ? existingAsset['type']?.toString() ?? 'મકાન/ફ્લેટ' : 'મકાન/ફ્લેટ';
 
     showDialog(
       context: context,
@@ -1033,7 +1041,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ')),
             ElevatedButton(
               onPressed: () {
-                final id = existingAsset != null ? existingAsset['id'] : "asset_${DateTime.now().millisecondsSinceEpoch}";
+                final id = existingAsset != null ? existingAsset['id'].toString() : "asset_${DateTime.now().millisecondsSinceEpoch}";
                 physicalAssetsBox.put(id, {
                   'id': id,
                   'title': titleCtrl.text,
@@ -1052,12 +1060,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- ૬. સોનું / ચાંદી રોકાણ એડિટ અને ડિલીટ સાથે ---
   void _openAddBullionDialog({Map<dynamic, dynamic>? existingItem}) {
-    final titleCtrl = TextEditingController(text: existingItem != null ? existingItem['title'] : '');
-    final weightCtrl = TextEditingController(text: existingItem != null ? existingItem['weight'].toString() : '');
-    final buyPriceCtrl = TextEditingController(text: existingItem != null ? existingItem['buyPrice'].toString() : '');
-    String metalType = existingItem != null ? existingItem['metalType'] : 'સોનું (Gold)';
+    final titleCtrl = TextEditingController(text: existingItem != null ? existingItem['title']?.toString() : '');
+    final weightCtrl = TextEditingController(text: existingItem != null ? existingItem['weight']?.toString() : '');
+    final buyPriceCtrl = TextEditingController(text: existingItem != null ? existingItem['buyPrice']?.toString() : '');
+    String metalType = existingItem != null ? existingItem['metalType']?.toString() ?? 'સોનું (Gold)' : 'સોનું (Gold)';
 
     showDialog(
       context: context,
@@ -1087,7 +1094,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ')),
             ElevatedButton(
               onPressed: () {
-                final id = existingItem != null ? existingItem['id'] : "bullion_${DateTime.now().millisecondsSinceEpoch}";
+                final id = existingItem != null ? existingItem['id'].toString() : "bullion_${DateTime.now().millisecondsSinceEpoch}";
                 bullionInvestmentsBox.put(id, {
                   'id': id,
                   'metalType': metalType,
@@ -1107,7 +1114,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- ટેબ ૧: દૈનિક એન્ટ્રી લિસ્ટ ---
   Widget _buildTransactionsTab() {
     if (filteredTransactions.isEmpty) {
       return Center(
@@ -1137,6 +1143,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         final isIncome = effect == 'incomeCredit';
         final isExpense = effect == 'expenseDebit' || effect == 'loanRepay';
         final amountColor = isIncome ? Colors.green : (isExpense ? Colors.redAccent : Colors.blue);
+        final txDate = DateTime.tryParse(tx['date']?.toString() ?? '') ?? DateTime.now();
 
         return Card(
           margin: EdgeInsets.zero,
@@ -1147,13 +1154,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: Icon(isIncome ? Icons.arrow_downward : (isExpense ? Icons.arrow_upward : Icons.trending_up), color: amountColor, size: 18),
             ),
             title: Text(tx['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-            subtitle: Text('${tx['categoryName']} • ${tx['accountName'] ?? ''}\n${DateFormat('dd MMM yyyy').format(DateTime.parse(tx['date']))}', style: const TextStyle(fontSize: 11)),
+            subtitle: Text('${tx['categoryName']} • ${tx['accountName'] ?? ''}\n${DateFormat('dd MMM yyyy').format(txDate)}', style: const TextStyle(fontSize: 11)),
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text('₹${tx['amount']}', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: amountColor)),
                 IconButton(icon: const Icon(Icons.edit, size: 16), onPressed: () => _openTransactionDialog(existingTx: tx)),
-                IconButton(icon: const Icon(Icons.delete, size: 16, color: Colors.grey), onPressed: () { transactionsBox.delete(tx['id']); setState(() {}); }),
+                IconButton(icon: const Icon(Icons.delete, size: 16, color: Colors.grey), onPressed: () async { await transactionsBox.delete(tx['id']); setState(() {}); }),
               ],
             ),
           ),
@@ -1162,15 +1169,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- ટેબ ૨: એનાલિસિસ ચાર્ટ (વર્તુળ, ચિત્ર/સ્તંભ, રૈખિક આલેખ) ---
   Widget _buildAnalysisTab() {
     final Map<String, double> categorySums = {};
     for (var tx in filteredTransactions) {
-      final name = tx['categoryName'] ?? 'અન્ય';
-      final amt = (tx['amount'] as num).toDouble();
-      categorySums[name] = (categorySums[name] ?? 0) + amt;
+      final name = tx['categoryName']?.toString() ?? 'અન્ય';
+      final amt = _parseAmt(tx['amount']);
+      categorySums[name] = (categorySums[name] ?? 0.0) + amt;
     }
-    if (categorySums.isEmpty) {
+    if (categorySums.isEmpty || categorySums.values.every((v) => v <= 0)) {
       return const Center(child: Text('વિશ્લેષણ માટે કોઈ ડેટા નથી.', style: TextStyle(color: Colors.grey)));
     }
     final colors = [Colors.teal, Colors.redAccent, Colors.blue, Colors.orange, Colors.purple, Colors.amber, Colors.green];
@@ -1183,7 +1189,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         final col = colors[cIdx % colors.length];
         cIdx++;
         return PieChartSectionData(
-          value: e.value,
+          value: e.value > 0 ? e.value : 0.001,
           title: '₹${e.value.toStringAsFixed(0)}',
           color: col,
           radius: 50,
@@ -1262,7 +1268,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- ટેબ ૩: બજેટ લક્ષ્યાંક (દૈનિક, માસિક, ત્રિમાસિક, છ માસિક, વાર્ષિક) ---
   Widget _buildBudgetTab() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(12.0),
@@ -1286,10 +1291,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
           const SizedBox(height: 8),
           ...categories.map((cat) {
             final budgetKey = 'budget_${budgetPeriod}_${cat['id']}';
-            final target = (budgetBox.get(budgetKey, defaultValue: 0.0) as num).toDouble();
+            final target = _parseAmt(budgetBox.get(budgetKey, defaultValue: 0.0));
             final actual = filteredTransactions
                 .where((t) => t['categoryId'].toString() == cat['id'].toString())
-                .fold(0.0, (sum, item) => sum + (item['amount'] as num).toDouble());
+                .fold(0.0, (sum, item) => sum + _parseAmt(item['amount']));
 
             if (target <= 0 && actual <= 0) return const SizedBox();
             final percent = target > 0 ? (actual / target).clamp(0.0, 1.0) : 1.0;
@@ -1305,7 +1310,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(cat['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
+                        Text(cat['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
                         Text('₹${actual.toStringAsFixed(0)} / ₹${target.toStringAsFixed(0)}', style: TextStyle(color: isOver ? Colors.red : Colors.teal, fontWeight: FontWeight.bold)),
                       ],
                     ),
@@ -1321,7 +1326,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- ટેબ ૪: ઇન્વેસ્ટમેન્ટ ટેબ (MF, Stocks, કિંમતી ધાતુઓ, મિલકત) ---
   Widget _buildInvestmentTab() {
     String invTitle = settingsBox.get('customInvTitle', defaultValue: 'ઇન્વેસ્ટમેન્ટ');
 
@@ -1432,9 +1436,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ...mfHoldings.map((h) => Card(
                       child: ListTile(
                         dense: true,
-                        title: Text(h['name']),
+                        title: Text(h['name']?.toString() ?? ''),
                         subtitle: Text("વેઇટેજ: ${h['weight']}% | વળતર: ${h['growth']}"),
-                        trailing: Text(h['trend'], style: TextStyle(fontWeight: FontWeight.bold, color: h['trend'] == 'તેજી' ? Colors.green : Colors.grey)),
+                        trailing: Text(h['trend']?.toString() ?? '', style: TextStyle(fontWeight: FontWeight.bold, color: h['trend'] == 'તેજી' ? Colors.green : Colors.grey)),
                       ),
                     )),
               ],
@@ -1603,7 +1607,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           children: [
                             Text("₹${b['buyPrice']}", style: const TextStyle(fontWeight: FontWeight.bold)),
                             IconButton(icon: const Icon(Icons.edit, size: 18, color: Colors.teal), onPressed: () => _openAddBullionDialog(existingItem: b)),
-                            IconButton(icon: const Icon(Icons.delete, size: 18, color: Colors.red), onPressed: () { bullionInvestmentsBox.delete(b['id']); setState(() {}); }),
+                            IconButton(icon: const Icon(Icons.delete, size: 18, color: Colors.red), onPressed: () async { await bullionInvestmentsBox.delete(b['id']); setState(() {}); }),
                           ],
                         ),
                       ),
@@ -1617,7 +1621,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _buildAssetsTab() {
     final assets = physicalAssetsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
-    double totalVal = assets.fold(0.0, (sum, i) => sum + (i['value'] as num).toDouble());
+    double totalVal = assets.fold(0.0, (sum, i) => sum + _parseAmt(i['value']));
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(12),
@@ -1649,14 +1653,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           a['type'] == 'પ્લોટ/જમીન' ? Icons.landscape : Icons.home,
                           color: Colors.teal,
                         ),
-                        title: Text(a['title']),
+                        title: Text(a['title'] ?? ''),
                         subtitle: Text("${a['type']} • ${a['location']}"),
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Text("₹${a['value']}", style: const TextStyle(fontWeight: FontWeight.bold)),
                             IconButton(icon: const Icon(Icons.edit, size: 18, color: Colors.teal), onPressed: () => _openAddPhysicalAssetDialog(existingAsset: a)),
-                            IconButton(icon: const Icon(Icons.delete, size: 18, color: Colors.red), onPressed: () { physicalAssetsBox.delete(a['id']); setState(() {}); }),
+                            IconButton(icon: const Icon(Icons.delete, size: 18, color: Colors.red), onPressed: () async { await physicalAssetsBox.delete(a['id']); setState(() {}); }),
                           ],
                         ),
                       ),
