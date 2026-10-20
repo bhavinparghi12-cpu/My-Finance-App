@@ -17,12 +17,21 @@ final ValueNotifier<ThemeMode> appThemeMode = ValueNotifier<ThemeMode>(ThemeMode
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // ૧. Firebase સુરક્ષિત રીતે ઓપ્શન્સ સાથે શરૂ કરો
   try {
-    await Firebase.initializeApp();
+    await Firebase.initializeApp(
+      options: const FirebaseOptions(
+        apiKey: "AIzaSyDiFtQz7lhwXTAN3gOWg2N-LJOQ9ACZN44",
+        appId: "1:821548105506:android:9f2408030e323b32482f7b",
+        messagingSenderId: "821548105506",
+        projectId: "my-finance-app-f4664",
+      ),
+    );
   } catch (e) {
     debugPrint("Firebase Init Error: $e");
   }
 
+  // ૨. Hive શરૂ કરો
   try {
     await Hive.initFlutter();
     final settings = await Hive.openBox('settingsBox');
@@ -189,7 +198,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<Map<dynamic, dynamic>> get accounts =>
       accountsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
 
-  // --- ઓટો-પે, SIP અને EMI પ્રોસેસિંગ ---
   void _processAutoPayAndSIP() {
     final now = DateTime.now();
     final allAuto = autoPayBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
@@ -199,7 +207,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
       final int day = item['day'] ?? 1;
       final double amt = (item['amount'] as num).toDouble();
-      final String type = item['type']; // 'SIP', 'EMI', 'AutoPay'
+      final String type = item['type'];
       final String fromAccId = item['fromAccountId'];
       final String toTarget = item['toTarget'] ?? '';
       final String lastExecution = item['lastProcessed'] ?? '';
@@ -207,7 +215,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final currentMonthKey = "${now.year}-${now.month}";
 
       if (lastExecution != currentMonthKey && now.day >= day) {
-        // જો લોન હોય અને લોન ખાતું શૂન્ય કે ભરાઈ ગયું હોય તો ઓટોમેટિક બંધ કરવું
         if (type == 'EMI') {
           final loanAcc = accounts.firstWhere((a) => a['id'].toString() == item['loanAccountId'], orElse: () => {});
           if (loanAcc.isNotEmpty) {
@@ -215,12 +222,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
             if (remainingLoan <= 0) {
               item['isActive'] = false;
               autoPayBox.put(item['id'], item);
-              continue; // લોન ભરાઈ ગઈ હોવાથી હપ્તો કાપવો નહિ
+              continue;
             }
           }
         }
 
-        // નવી ટ્રાન્ઝેક્શન આપોઆપ નોંધવી
         final txId = "auto_${DateTime.now().millisecondsSinceEpoch}_${item['id']}";
         final fromAcc = accounts.firstWhere((a) => a['id'].toString() == fromAccId, orElse: () => {'name': 'બેંક'});
         String catEffect = type == 'SIP' ? 'assetIncrease' : (type == 'EMI' ? 'loanRepay' : 'expenseDebit');
@@ -336,7 +342,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         });
   }
 
-  // --- સેટિંગ્સ મોડલ ડાયલોગ (બધા વિકલ્પો એક જ બટનમાં) ---
   void _openSettingsDialog() {
     showModalBottomSheet(
       context: context,
@@ -457,7 +462,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- EMI / SIP / ઓટો-પે મેનેજર ડાયલોગ ---
   void _openAutoPayManager() {
     showDialog(
       context: context,
@@ -582,7 +586,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- ૧. દૈનિક એન્ટ્રી લિસ્ટ ટેબ ---
   Widget _buildTransactionsTab() {
     if (filteredTransactions.isEmpty) {
       return const Center(child: Text('આ સમયગાળામાં કોઈ વ્યવહાર મળ્યો નથી.', style: TextStyle(color: Colors.grey)));
@@ -622,7 +625,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- ૨. એનાલિસિસ ચાર્ટ ટેબ ---
   Widget _buildAnalysisTab() {
     final Map<String, double> categorySums = {};
     for (var tx in filteredTransactions) {
@@ -708,7 +710,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- ૩. બજેટ આયોજન ટેબ (બે વર્તુળ આલેખ અને PDF એક્સપોર્ટ સાથે) ---
   Widget _buildBudgetTab() {
     double totalBudget = 0.0;
     double totalActual = 0.0;
@@ -850,7 +851,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- ૪. નવો ચોથો વિકલ્પ: ઇન્વેસ્ટમેન્ટ (મ્યુચ્યુઅલ ફંડ, સ્ટોક માર્કેટ, સપોર્ટ/રેઝિસ્ટન્સ) ---
   Widget _buildInvestmentTab() {
     String invTitle = settingsBox.get('customInvTitle', defaultValue: 'ઇન્વેસ્ટમેન્ટ');
 
@@ -963,12 +963,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     const SizedBox(height: 10),
                     ElevatedButton(
                       onPressed: () {
-                        // એનાલિસિસ: સપોર્ટ, રેઝિસ્ટન્સ અને ટાર્ગેટ પ્રાઇસ ગણતરી
                         setStockState(() {
                           currentPrice = 2450.0;
-                          support = currentPrice * 0.95; // 5% સપોર્ટ
-                          resistance = currentPrice * 1.08; // 8% રેઝિસ્ટન્સ
-                          targetPrice = currentPrice * 1.15; // 15% ટાર્ગેટ
+                          support = currentPrice * 0.95;
+                          resistance = currentPrice * 1.08;
+                          targetPrice = currentPrice * 1.15;
                         });
                       },
                       child: const Text('ટેકનિકલ લેવલ નક્કી કરો'),
@@ -1114,7 +1113,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
               children: [
                 Text(existingTx == null ? 'નવો હિસાબ ઉમેરો' : 'હિસાબ સુધારો', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                 TextField(controller: titleController, decoration: const InputDecoration(labelText: 'વિગત / શીર્ષક')),
-                TextField(controller: amountController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'રકમ (₹)')),
+                TextField(
+                  controller: amountController,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(labelText: 'રકમ (₹)'),
+                ),
                 DropdownButton<String>(
                   isExpanded: true,
                   value: selectedAcc['id'].toString(),
@@ -1259,7 +1262,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final totalIncome = _calculateTotal('incomeCredit');
     final netSavings = totalIncome - (totalExpense + assetGain);
 
-    // ૧૯૯૦ થી ૨૧૦૦ સુધીના નાણાકીય વર્ષ લિસ્ટ
     final List<int> fyYears = List.generate(111, (index) => 1990 + index);
 
     return Scaffold(
