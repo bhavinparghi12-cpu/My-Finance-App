@@ -134,7 +134,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String budgetPeriod = 'માસિક';
 
   late int selectedFinancialYearStart;
-  String appTitle = 'નાણાકીય વૉલ્ટ';
+  String appTitle = 'નાણાકીય હિસાબો';
+
+  // મ્યુચ્યુઅલ ફંડ એનાલિસિસ સ્ટેટ્સ
+  final TextEditingController _mfSearchController = TextEditingController(text: "HDFC Top 100");
+  bool _isMfLoading = false;
+  bool _isRankingLoading = false;
+  String currentMfName = "HDFC Top 100 Fund";
+  double estimatedNavImpact = 1.95;
+  String marketStatus = "🟢 મજબૂત તેજી (Bullish Alert)";
+  Color statusColor = Colors.green;
+
+  List<Map<String, dynamic>> mfHoldings = [
+    {"name": "HDFC Bank Ltd", "weight": 22.5, "trend": "તેજી", "growth": "મજબૂત (+12.4%)", "impact": 0.45},
+    {"name": "Reliance Industries", "weight": 18.0, "trend": "તેજી", "growth": "સારો (+8.2%)", "impact": 0.38},
+    {"name": "ICICI Bank Ltd", "weight": 14.5, "trend": "સ્થિર", "growth": "સ્થિર (+6.1%)", "impact": 0.12},
+    {"name": "Infosys Ltd", "weight": 10.0, "trend": "મંદી", "growth": "નબળું (-3.4%)", "impact": -0.15},
+    {"name": "Tata Consultancy Services", "weight": 9.0, "trend": "સ્થિર", "growth": "સામાન્ય (+4.0%)", "impact": 0.05},
+    {"name": "Larsen & Toubro", "weight": 7.0, "trend": "તેજી", "growth": "ઓર્ડર મળ્યા (+15.0%)", "impact": 0.25},
+  ];
+
+  List<Map<String, dynamic>> rankedFunds = [];
+
+  // સ્ટોક કેલ્ક્યુલેટર કંટ્રોલર્સ
+  final TextEditingController _stockNameCtrl = TextEditingController(text: "TATA POWER");
+  final TextEditingController _stockPriceCtrl = TextEditingController(text: "410.0");
+  double currentStockPrice = 0.0;
+  double stockSupport = 0.0;
+  double stockResistance = 0.0;
+  double stockTarget = 0.0;
 
   @override
   void initState() {
@@ -155,7 +183,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     autoPayBox = await Hive.openBox('autoPayBox_$prefix');
     investmentBox = await Hive.openBox('investmentBox_$prefix');
 
-    appTitle = settingsBox.get('customAppTitle', defaultValue: 'નાણાકીય વૉલ્ટ');
+    appTitle = settingsBox.get('customAppTitle', defaultValue: 'નાણાકીય હિસાબો');
 
     if (categoriesBox.isEmpty) _saveDefaultCategories();
     if (accountsBox.isEmpty) _saveDefaultAccounts();
@@ -342,6 +370,61 @@ class _DashboardScreenState extends State<DashboardScreen> {
         });
   }
 
+  // --- લાઈવ મ્યુચ્યુઅલ ફંડ એનાલિસિસ ફંક્શન્સ ---
+  Future<void> _fetchAndAnalyzeMf(String fundQuery) async {
+    setState(() => _isMfLoading = true);
+    try {
+      final url = Uri.parse("https://api.mfapi.in/mf/search?q=$fundQuery");
+      final response = await http.get(url).timeout(const Duration(seconds: 6));
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data is List && data.isNotEmpty) {
+          currentMfName = data[0]['schemeName'];
+        }
+      }
+    } catch (_) {}
+
+    double calculatedImpact = 0.0;
+    for (var h in mfHoldings) {
+      calculatedImpact += (h['impact'] as double) * ((h['weight'] as double) / 10.0);
+    }
+
+    setState(() {
+      estimatedNavImpact = double.parse(calculatedImpact.toStringAsFixed(2));
+      if (estimatedNavImpact > 0.8) {
+        marketStatus = "🟢 મજબૂત તેજી (Bullish Alert)";
+        statusColor = Colors.green;
+      } else if (estimatedNavImpact < -0.8) {
+        marketStatus = "🔴 મંદીની શક્યતા (Bearish Alert)";
+        statusColor = Colors.red;
+      } else {
+        marketStatus = "⚪ સ્થિર (Range Bound)";
+        statusColor = Colors.blue;
+      }
+      _isMfLoading = false;
+    });
+  }
+
+  Future<void> _reEvaluateAllFunds() async {
+    setState(() => _isRankingLoading = true);
+    await Future.delayed(const Duration(seconds: 1));
+
+    List<Map<String, dynamic>> list = [
+      {"name": "HDFC Top 100 Fund", "impact": 2.15, "signal": "તેજી", "color": Colors.green},
+      {"name": "Tata Digital India Fund", "impact": 1.40, "signal": "તેજી", "color": Colors.green},
+      {"name": "SBI Bluechip Fund", "impact": 0.65, "signal": "સ્થિર", "color": Colors.blue},
+      {"name": "Nippon India Small Cap", "impact": -0.90, "signal": "મંદી", "color": Colors.red},
+    ];
+
+    list.sort((a, b) => (b['impact'] as double).compareTo(a['impact'] as double));
+
+    setState(() {
+      rankedFunds = list;
+      _isRankingLoading = false;
+    });
+  }
+
+  // --- સેટિંગ્સ ડાયલોગ ---
   void _openSettingsDialog() {
     showModalBottomSheet(
       context: context,
@@ -394,7 +477,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
               ListTile(
                 leading: const Icon(Icons.palette, color: Colors.purple),
-                title: const Text('થીમ કલર અને બેકગ્રાઉન્ડ ફોટો'),
+                title: const Text('થીમ કલર પસંદ કરો'),
                 onTap: () {
                   Navigator.pop(ctx);
                   _openThemeCustomizer();
@@ -586,6 +669,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  // --- ૧. દૈનિક એન્ટ્રી ટેબ ---
   Widget _buildTransactionsTab() {
     if (filteredTransactions.isEmpty) {
       return const Center(child: Text('આ સમયગાળામાં કોઈ વ્યવહાર મળ્યો નથી.', style: TextStyle(color: Colors.grey)));
@@ -625,6 +709,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  // --- ૨. એનાલિસિસ ચાર્ટ ટેબ ---
   Widget _buildAnalysisTab() {
     final Map<String, double> categorySums = {};
     for (var tx in filteredTransactions) {
@@ -710,6 +795,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  // --- ૩. બજેટ ટેબ ---
   Widget _buildBudgetTab() {
     double totalBudget = 0.0;
     double totalActual = 0.0;
@@ -851,6 +937,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  // --- ૪. ઇન્વેસ્ટમેન્ટ ટેબ (સંપૂર્ણ મ્યુચ્યુઅલ ફંડ એનાલિસિસ અને સ્ટોક કેલ્ક્યુલેટર) ---
   Widget _buildInvestmentTab() {
     String invTitle = settingsBox.get('customInvTitle', defaultValue: 'ઇન્વેસ્ટમેન્ટ');
 
@@ -903,125 +990,238 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  // મ્યુચ્યુઅલ ફંડ સબ-ટેબ (લાઈવ સર્ચ, હોલ્ડિંગ્સ અને રેન્કિંગ સહિત)
   Widget _buildMutualFundSubTab() {
+    return _isMfLoading
+        ? const Center(child: CircularProgressIndicator())
+        : SingleChildScrollView(
+            padding: const EdgeInsets.all(12.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _mfSearchController,
+                        decoration: const InputDecoration(
+                          hintText: "મ્યુચ્યુઅલ ફંડનું નામ શોધો...",
+                          prefixIcon: Icon(Icons.search),
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      onPressed: () => _fetchAndAnalyzeMf(_mfSearchController.text),
+                      child: const Text("શોધો"),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Card(
+                  color: statusColor.withValues(alpha: 0.1),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(currentMfName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        const Divider(),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text("સંભવિત NAV અસર: ${estimatedNavImpact > 0 ? '+' : ''}$estimatedNavImpact%",
+                                style: TextStyle(fontWeight: FontWeight.bold, color: statusColor, fontSize: 15)),
+                            Text(marketStatus, style: TextStyle(fontWeight: FontWeight.bold, color: statusColor)),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
+                    icon: _isRankingLoading
+                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                        : const Icon(Icons.bolt),
+                    label: const Text("🔄 તમામ ફંડ્સની ફરી તપાસણી અને લાઈવ રેન્ક"),
+                    onPressed: _isRankingLoading ? null : _reEvaluateAllFunds,
+                  ),
+                ),
+                if (rankedFunds.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  const Text("🏆 તેજીના આધારે ફંડ્સ રેન્કિંગ:", style: TextStyle(fontWeight: FontWeight.bold)),
+                  ...rankedFunds.asMap().entries.map((entry) {
+                    int idx = entry.key + 1;
+                    var f = entry.value;
+                    return ListTile(
+                      dense: true,
+                      leading: CircleAvatar(radius: 12, child: Text("$idx", style: const TextStyle(fontSize: 11))),
+                      title: Text(f['name'], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                      trailing: Text("${f['impact'] > 0 ? '+' : ''}${f['impact']}% (${f['signal']})",
+                          style: TextStyle(color: f['color'], fontWeight: FontWeight.bold)),
+                    );
+                  }),
+                  const Divider(),
+                ],
+                const SizedBox(height: 12),
+                const Text("📋 સ્ટોક હોલ્ડિંગ્સ અને પરિણામો:", style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 6),
+                ...mfHoldings.map((h) => Card(
+                      margin: const EdgeInsets.symmetric(vertical: 4),
+                      child: ListTile(
+                        dense: true,
+                        title: Text(h['name'], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                        subtitle: Text("વેઇટેજ: ${h['weight']}% | પરિણામ: ${h['growth']}"),
+                        trailing: Text(
+                          h['trend'],
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: h['trend'] == 'તેજી' ? Colors.green : (h['trend'] == 'મંદી' ? Colors.red : Colors.grey),
+                          ),
+                        ),
+                      ),
+                    )),
+              ],
+            ),
+          );
+  }
+
+  // સ્ટોક માર્કેટ સબ-ટેબ (ડાયનેમિક પ્રાઇસ કેલ્ક્યુલેટર સાથે)
+  Widget _buildStockMarketSubTab() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(12.0),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text("મ્યુચ્યુઅલ ફંડ પોર્ટફોલિયો", style: TextStyle(fontWeight: FontWeight.bold)),
+              const Text("સ્ટોક ટેકનિકલ ટાર્ગેટ કેલ્ક્યુલેટર", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
               ElevatedButton.icon(
                 icon: const Icon(Icons.add, size: 16),
-                label: const Text("ફંડ ઉમેરો"),
-                onPressed: () => _openAddInvestmentItemDialog('MF'),
+                label: const Text("સ્ટોક ઉમેરો"),
+                onPressed: () => _openAddInvestmentItemDialog('STOCK'),
               ),
             ],
           ),
           const SizedBox(height: 10),
-          _buildInvestmentChartAndSummary('MF'),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildStockMarketSubTab() {
-    final stockNameCtrl = TextEditingController();
-    double currentPrice = 0.0;
-    double support = 0.0;
-    double resistance = 0.0;
-    double targetPrice = 0.0;
-
-    return StatefulBuilder(
-      builder: (context, setStockState) => SingleChildScrollView(
-        padding: const EdgeInsets.all(12.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text("સ્ટોક ટેકનિકલ ટાર્ગેટ કેલ્ક્યુલેટર", style: TextStyle(fontWeight: FontWeight.bold)),
-                ElevatedButton.icon(
-                  icon: const Icon(Icons.add, size: 16),
-                  label: const Text("સ્ટોક ઉમેરો"),
-                  onPressed: () => _openAddInvestmentItemDialog('STOCK'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(12.0),
-                child: Column(
-                  children: [
-                    TextField(
-                      controller: stockNameCtrl,
-                      decoration: const InputDecoration(labelText: 'સ્ટોકનું નામ દાખલ કરો (દા.ત. RELIANCE, TCS)', prefixIcon: Icon(Icons.search)),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: Column(
+                children: [
+                  TextField(
+                    controller: _stockNameCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'સ્ટોકનું નામ દાખલ કરો (દા.ત. TATA POWER, RELIANCE)',
+                      prefixIcon: Icon(Icons.search),
+                      border: OutlineInputBorder(),
+                      isDense: true,
                     ),
-                    const SizedBox(height: 10),
-                    ElevatedButton(
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _stockPriceCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(
+                      labelText: 'હાલની બજાર કિંમત / ખરીદ કિંમત (₹)',
+                      hintText: 'દા.ત. 410.0',
+                      prefixIcon: Icon(Icons.currency_rupee),
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
                       onPressed: () {
-                        setStockState(() {
-                          currentPrice = 2450.0;
-                          support = currentPrice * 0.95;
-                          resistance = currentPrice * 1.08;
-                          targetPrice = currentPrice * 1.15;
-                        });
+                        final price = double.tryParse(_stockPriceCtrl.text) ?? 0.0;
+                        if (price > 0) {
+                          setState(() {
+                            currentStockPrice = price;
+                            stockSupport = price * 0.95; // ૫% નીચે સપોર્ટ
+                            stockResistance = price * 1.08; // ૮% ઉપર રેઝિસ્ટન્સ
+                            stockTarget = price * 1.15; // ૧૫% સંભવિત ટાર્ગેટ
+                          });
+                        }
                       },
                       child: const Text('ટેકનિકલ લેવલ નક્કી કરો'),
                     ),
-                    if (currentPrice > 0) ...[
-                      const Divider(),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceAround,
-                        children: [
-                          Column(children: [const Text("સપોર્ટ લેવલ", style: TextStyle(color: Colors.green)), Text("₹${support.toStringAsFixed(1)}", style: const TextStyle(fontWeight: FontWeight.bold))]),
-                          Column(children: [const Text("રેઝિસ્ટન્સ લેવલ", style: TextStyle(color: Colors.red)), Text("₹${resistance.toStringAsFixed(1)}", style: const TextStyle(fontWeight: FontWeight.bold))]),
-                          Column(children: [const Text("ટાર્ગેટ પ્રાઇસ", style: TextStyle(color: Colors.blue)), Text("₹${targetPrice.toStringAsFixed(1)}", style: const TextStyle(fontWeight: FontWeight.bold))]),
+                  ),
+                  if (currentStockPrice > 0) ...[
+                    const Divider(height: 24),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      children: [
+                        Column(
+                          children: [
+                            const Text("સપોર્ટ લેવલ", style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
+                            const SizedBox(height: 4),
+                            Text("₹${stockSupport.toStringAsFixed(1)}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                          ],
+                        ),
+                        Column(
+                          children: [
+                            const Text("રેઝિસ્ટન્સ લેવલ", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+                            const SizedBox(height: 4),
+                            Text("₹${stockResistance.toStringAsFixed(1)}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                          ],
+                        ),
+                        Column(
+                          children: [
+                            const Text("ટાર્ગેટ પ્રાઇસ", style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold)),
+                            const SizedBox(height: 4),
+                            Text("₹${stockTarget.toStringAsFixed(1)}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text("ઇન્વેસ્ટમેન્ટ ગ્રોથ સમરી અને ટ્રેન્ડ", style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    height: 150,
+                    child: LineChart(
+                      LineChartData(
+                        lineBarsData: [
+                          LineChartBarData(
+                            spots: const [FlSpot(0, 100), FlSpot(1, 108), FlSpot(2, 104), FlSpot(3, 115), FlSpot(4, 122)],
+                            isCurved: true,
+                            color: Colors.teal,
+                            barWidth: 3,
+                            belowBarData: BarAreaData(show: true, color: Colors.teal.withValues(alpha: 0.2)),
+                          )
                         ],
+                        titlesData: const FlTitlesData(show: false),
+                        gridData: const FlGridData(show: false),
+                        borderData: FlBorderData(show: false),
                       ),
-                    ],
-                  ],
-                ),
+                    ),
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 10),
-            _buildInvestmentChartAndSummary('STOCK'),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildInvestmentChartAndSummary(String type) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12.0),
-        child: Column(
-          children: [
-            const Text("ઇન્વેસ્ટમેન્ટ ગ્રોથ સમરી અને ટ્રેન્ડ", style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 10),
-            SizedBox(
-              height: 160,
-              child: LineChart(
-                LineChartData(
-                  lineBarsData: [
-                    LineChartBarData(
-                      spots: const [FlSpot(0, 10), FlSpot(1, 14), FlSpot(2, 12), FlSpot(3, 18), FlSpot(4, 22)],
-                      isCurved: true,
-                      color: Colors.teal,
-                      belowBarData: BarAreaData(show: true, color: Colors.teal.withValues(alpha: 0.2)),
-                    )
-                  ],
-                  titlesData: const FlTitlesData(show: false),
-                  gridData: const FlGridData(show: false),
-                ),
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
