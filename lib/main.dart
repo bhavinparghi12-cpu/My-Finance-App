@@ -677,7 +677,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'ખાતાનું નામ (દા.ત. SBI, HDFC)')),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
-                  value: type,
+                  InitialValue: type,
                   isExpanded: true,
                   decoration: const InputDecoration(labelText: 'ખાતાનો પ્રકાર'),
                   items: accountTypes.map((t) => DropdownMenuItem(value: t, child: Text(t, style: const TextStyle(fontSize: 12)))).toList(),
@@ -1015,7 +1015,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: Column(
         children: [
           DropdownButtonFormField<String>(
-            value: selectedCity,
+            initialValue: selectedCity,
             decoration: const InputDecoration(labelText: 'શહેર પસંદ કરો', border: OutlineInputBorder()),
             items: bullionCityRates.keys.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
             onChanged: (v) => setState(() => selectedCity = v!),
