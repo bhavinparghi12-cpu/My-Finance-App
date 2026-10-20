@@ -50,8 +50,9 @@ class _AuthGateState extends State<AuthGate> {
   }
 
   Future<void> _onEmailChanged(String email) async {
-    if (email.contains('@') && email.contains('.')) {
-      final hasPwd = await SecurityService.isPasswordSetForEmail(email.trim());
+    final cleanEmail = email.trim().toLowerCase();
+    if (cleanEmail.contains('@') && cleanEmail.contains('.')) {
+      final hasPwd = await SecurityService.isPasswordSetForEmail(cleanEmail);
       setState(() {
         _isFirstTime = !hasPwd;
         _errorMessage = '';
@@ -59,10 +60,10 @@ class _AuthGateState extends State<AuthGate> {
     }
   }
 
-  // --- સુધારેલ ઓથેન્ટિકેશન ફંક્શન (Firebase + Local Sync) ---
+  // --- ઓથેન્ટિકેશન ફંક્શન ---
   Future<void> _authenticate() async {
     final email = _emailController.text.trim().toLowerCase();
-    final pwd = _passwordController.text;
+    final pwd = _passwordController.text.trim();
 
     if (!email.contains('@') || !email.contains('.')) {
       setState(() => _errorMessage = 'માન્ય ઈમેઈલ એડ્રેસ દાખલ કરો');
@@ -78,15 +79,15 @@ class _AuthGateState extends State<AuthGate> {
 
     try {
       if (_isFirstTime) {
-        // ૧. Firebase Authentication પર એકાઉન્ટ બનાવો
+        // ૧. નવું એકાઉન્ટ બનાવવાનો પ્રયત્ન
         try {
           await FirebaseAuth.instance.createUserWithEmailAndPassword(
             email: email,
             password: pwd,
           );
         } on FirebaseAuthException catch (e) {
-          // જો Firebase પર પહેલેથી એકાઉન્ટ હોય તો સાઇન-ઇન કરીને આગળ વધો
           if (e.code == 'email-already-in-use') {
+            // જો એકાઉન્ટ પહેલેથી હાજર હોય તો સાઇન-ઇન કરો
             await FirebaseAuth.instance.signInWithEmailAndPassword(
               email: email,
               password: pwd,
@@ -96,17 +97,15 @@ class _AuthGateState extends State<AuthGate> {
           }
         }
 
-        // ૨. લોકલ સ્ટોરેજ સેટઅપ કરો
         await SecurityService.setupUserAccount(email, pwd);
         await _openUserDatabaseAndNavigate(email);
       } else {
-        // ૩. લૉગિન વખતે Firebase દ્વારા પાસવર્ડ ચકાસો (જેથી લિંક વડે બદલાયેલો પાસવર્ડ માન્ય રહે)
+        // ૨. સીધું સાઇન-ઇન કરો
         await FirebaseAuth.instance.signInWithEmailAndPassword(
           email: email,
           password: pwd,
         );
 
-        // ૪. Firebase માં લૉગિન સફળ થાય એટલે લોકલ સ્ટોરેજમાં પણ નવો પાસવર્ડ અપડેટ કરી દો
         await SecurityService.resetPassword(email, pwd);
         await SecurityService.setLastActiveEmail(email);
         await _openUserDatabaseAndNavigate(email);
@@ -114,32 +113,30 @@ class _AuthGateState extends State<AuthGate> {
     } on FirebaseAuthException catch (e) {
       setState(() {
         if (e.code == 'wrong-password' || e.code == 'invalid-credential') {
-          _errorMessage = 'ખોટો પાસવર્ડ! કૃપા કરીને નવો સેટ કરેલો પાસવર્ડ દાખલ કરો.';
+          _errorMessage = 'ખોટો પાસવર્ડ! કૃપા કરીને સાચો પાસવર્ડ નાખો અથવા નીચેથી રીસેટ કરો.';
         } else if (e.code == 'user-not-found') {
-          _errorMessage = 'આ ઈમેઈલ વાળું એકાઉન્ટ મળ્યું નથી.';
+          _errorMessage = 'આ ઈમેઈલ વાળું એકાઉન્ટ મળ્યું નથી. નવું એકાઉન્ટ બનાવો.';
         } else if (e.code == 'network-request-failed') {
           _errorMessage = 'ઇન્ટરનેટ કનેક્શન તપાસો.';
         } else {
           _errorMessage = e.message ?? 'ઓથેન્ટિકેશન નિષ્ફળ.';
         }
-        _passwordController.clear();
       });
     } catch (e) {
-      // જો ઈન્ટરનેટ ન હોય તો લોકલ પાસવર્ડ દ્વારા ઓફલાઈન બેકઅપ વેરિફિકેશન
+      // ઑફલાઇન બેકઅપ તપાસ
       final isValid = await SecurityService.verifyPassword(email, pwd);
       if (isValid) {
         await SecurityService.setLastActiveEmail(email);
         await _openUserDatabaseAndNavigate(email);
       } else {
         setState(() {
-          _errorMessage = 'ખોટો પાસવર્ડ અથવા નેટવર્ક એરર.';
-          _passwordController.clear();
+          _errorMessage = 'ખોટો પાસવર્ડ અથવા કનેક્શન એરર.';
         });
       }
     }
   }
 
-  // --- પાસવર્ડ રીસેટ લિંક મોકલવાનું ફંક્શન ---
+  // --- પાસવર્ડ રીસેટ લિંક મોકલવી ---
   Future<void> _sendResetPasswordLink() async {
     final email = _emailController.text.trim().toLowerCase();
 
@@ -147,14 +144,13 @@ class _AuthGateState extends State<AuthGate> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           backgroundColor: Colors.red,
-          content: Text('કૃપા કરીને માન્ય ઈમેઈલ એડ્રેસ દાખલ કરો.'),
+          content: Text('કૃપા કરીને પહેલાં માન્ય ઈમેઈલ એડ્રેસ દાખલ કરો.'),
         ),
       );
       return;
     }
 
     try {
-      // Firebase Authentication દ્વારા રીસેટ લિંક ઈમેલ મોકલવો
       await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
 
       if (!mounted) return;
@@ -170,7 +166,7 @@ class _AuthGateState extends State<AuthGate> {
             ],
           ),
           content: Text(
-            '$email પર પાસવર્ડ રીસેટ કરવાની લિંક મોકલવામાં આવી છે.\n\nકૃપા કરીને તમારું Gmail/ઇનબોક્સ (અથવા Spam ફોલ્ડર) તપાસો અને તેમાં આપેલી લિંક પર ક્લિક કરીને નવો પાસવર્ડ સેટ કરો.',
+            '$email પર પાસવર્ડ રીસેટ કરવાની લિંક મોકલી દેવાઈ છે.\n\nકૃપા કરીને તમારું Gmail/ઇનબોક્સ (અથવા Spam ફોલ્ડર) તપાસો અને ત્યાં આપેલી લિંક પર ક્લિક કરીને નવો પાસવર્ડ સેટ કરો.',
             style: const TextStyle(fontSize: 14),
           ),
           actions: [
@@ -287,7 +283,7 @@ class _AuthGateState extends State<AuthGate> {
                 obscureText: _obscurePassword,
                 keyboardType: TextInputType.visiblePassword,
                 decoration: InputDecoration(
-                  labelText: 'માસ્ટર પાસવર્ડ (કોઈપણ કેરેક્ટર/લંબાઈ)',
+                  labelText: 'માસ્ટર પાસવર્ડ',
                   hintText: 'દા.ત. P@ss#2026!xyz',
                   errorText: _errorMessage.isEmpty ? null : _errorMessage,
                   prefixIcon: const Icon(Icons.password),
@@ -313,21 +309,37 @@ class _AuthGateState extends State<AuthGate> {
                 icon: const Icon(Icons.lock_open),
                 label: Text(_isFirstTime ? 'એકાઉન્ટ બનાવી પ્રવેશ કરો' : 'અનલૉક કરો'),
               ),
-              if (!_isFirstTime) ...[
-                const SizedBox(height: 12),
-                TextButton.icon(
-                  onPressed: _sendResetPasswordLink,
-                  icon: const Icon(Icons.lock_reset, size: 22, color: Colors.teal),
-                  label: const Text(
-                    'પાસવર્ડ ભૂલી ગયા છો? (લિંક વડે રીસેટ કરો)',
-                    style: TextStyle(
-                      color: Colors.teal,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 14,
-                    ),
+              const SizedBox(height: 12),
+
+              // 👈 અહીંથી શરત હટાવી દીધી છે, જેથી પ્રથમથી જ રીસેટ લિંકનું બટન હંમેશાં દેખાશે
+              TextButton.icon(
+                onPressed: _sendResetPasswordLink,
+                icon: const Icon(Icons.lock_reset, size: 22, color: Colors.teal),
+                label: const Text(
+                  'પાસવર્ડ ભૂલી ગયા છો? (લિંક વડે રીસેટ કરો)',
+                  style: TextStyle(
+                    color: Colors.teal,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
                   ),
                 ),
-              ],
+              ),
+
+              // મોડ બદલવા માટેનો વિકલ્પ (નવું એકાઉન્ટ / સાઇન ઇન)
+              TextButton(
+                onPressed: () {
+                  setState(() {
+                    _isFirstTime = !_isFirstTime;
+                    _errorMessage = '';
+                  });
+                },
+                child: Text(
+                  _isFirstTime
+                      ? 'પહેલેથી એકાઉન્ટ છે? લૉગિન કરો'
+                      : 'નવું એકાઉન્ટ બનાવવું છે? અહીં ક્લિક કરો',
+                  style: const TextStyle(fontSize: 13, color: Colors.grey),
+                ),
+              ),
             ],
           ),
         ),
