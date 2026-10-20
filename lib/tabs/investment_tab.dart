@@ -290,7 +290,7 @@ class _InvestmentTabState extends State<InvestmentTab> {
       child: Column(
         children: [
           DropdownButtonFormField<String>(
-  value: selectedCity, // 👈 અહીં 'value' ની જગ્યાએ સુધારો કરવાનો છે
+  initialvalue: selectedCity, // 👈 અહીં 'value' ની જગ્યાએ સુધારો કરવાનો છે
   decoration: const InputDecoration(labelText: 'શહેર પસંદ કરો', border: OutlineInputBorder()),
   items: bullionCityRates.keys.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
   onChanged: (v) => setState(() => selectedCity = v!),
