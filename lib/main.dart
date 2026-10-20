@@ -1085,7 +1085,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final assetGain = _calculateTotal('assetIncrease');
     final totalExpense = _calculateTotal('expenseDebit') + _calculateTotal('loanRepay');
     final totalIncome = _calculateTotal('incomeCredit');
-    final netSavings = totalIncome - (totalExpense + assetGain);
 
     final List<int> fyYears = List.generate(111, (index) => 1990 + index);
 
