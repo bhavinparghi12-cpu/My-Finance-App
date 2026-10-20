@@ -75,14 +75,14 @@ class FinanceApp extends StatelessWidget {
                 brightness: Brightness.light,
                 colorSchemeSeed: primaryColor,
                 scaffoldBackgroundColor: Colors.grey.shade50,
-                cardTheme: CardTheme(color: Colors.white, elevation: 1),
+                cardTheme: CardThemeData(color: Colors.white, elevation: 1),
               ),
               darkTheme: ThemeData(
                 useMaterial3: true,
                 brightness: Brightness.dark,
                 colorSchemeSeed: primaryColor,
                 scaffoldBackgroundColor: const Color(0xFF121212),
-                cardTheme: const CardTheme(color: Color(0xFF1E1E1E), elevation: 1),
+                cardTheme: const CardThemeData(color: Color(0xFF1E1E1E), elevation: 1),
                 textTheme: const TextTheme(
                   bodyLarge: TextStyle(color: Colors.white),
                   bodyMedium: TextStyle(color: Colors.white70),
@@ -475,7 +475,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         stockNewsSentiment = "🟢 સોલાર પાર્ક અને EV ચાર્જિંગ સ્ટેશનના નવા કોન્ટ્રાક્ટ્સ";
       } else if (name.contains("TCS")) {
         price = 4120.0;
-        stockNewsSentiment = "⚪ સ્થિર પરિણામો & $2.5B નવો AI ઓર્ડર મળ્યો";
+        stockNewsSentiment = "⚪ સ્થિર પરિણામો & \$2.5B નવો AI ઓર્ડર મળ્યો";
       } else if (name.contains("INFOSYS") || name.contains("INFY")) {
         price = 1880.0;
         stockNewsSentiment = "🟢 યુરોપિયન બેંકિંગ સેક્ટરમાંથી મોટો ક્લાઉડ પ્રોજેક્ટ";
