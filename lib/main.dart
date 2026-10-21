@@ -96,7 +96,7 @@ class FinanceApp extends StatelessWidget {
                   titleMedium: TextStyle(color: Colors.white),
                   titleSmall: TextStyle(color: Colors.white70),
                 ),
-                dialogTheme: const DialogTheme(backgroundColor: Color(0xFF1E1E1E)),
+                dialogTheme: const DialogThemeData(backgroundColor: Color(0xFF1E1E1E)),
                 bottomSheetTheme: const BottomSheetThemeData(backgroundColor: Color(0xFF1E1E1E)),
               ),
               home: const AuthGate(),
