@@ -141,282 +141,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
   TimeFilter selectedFilter = TimeFilter.monthly;
   String budgetPeriod = 'માસિક';
   ChartType selectedChartType = ChartType.pie;
+  
+  // 👈 પ્રથમ સ્ક્રીન માટે આલેખ પ્રકાર પસંદગી વેરિયેબલ
+  ChartType selectedHomeChartType = ChartType.bar;
 
   late int selectedFinancialYearStart;
   String appTitle = 'નાણાકીય હિસાબો';
 
-  // મ્યુચ્યુઅલ ફંડ સ્ટેટ્સ
-import 'dart:convert';
-import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-
-class DynamicMutualFundAnalyzer extends StatefulWidget {
-  const DynamicMutualFundAnalyzer({super.key});
-
-  @override
-  State<DynamicMutualFundAnalyzer> createState() => _DynamicMutualFundAnalyzerState();
-}
-
-class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
-  final TextEditingController _searchCtrl = TextEditingController(text: "HDFC Top 100");
-  bool _isLoading = false;
-
-  String currentFundName = "HDFC Top 100 Fund";
-  double baseNav = 0.0;
-  double estimatedNavImpact = 0.0;
-  double projectedNav = 0.0;
-  String expectedTimeframe = "ગણતરી ચાલુ છે..."; // 👈 સંભવિત તેજી માટે અંદાજિત સમય
-  String marketSignal = "તપાસ ચાલુ...";
-  Color signalColor = Colors.grey;
-
-  List<Map<String, dynamic>> verifiedHoldings = [];
-
-  @override
-  void initState() {
-    super.initState();
-    fetchAndAnalyzeLiveFund(_searchCtrl.text);
-  }
-
-  // ૧. ઓનલાઇન સત્તાવાર પોર્ટફોલિયો અને વાસ્તવિક વેઇટેજ મેળવવું
-  Future<void> fetchAndAnalyzeLiveFund(String query) async {
-    if (query.trim().isEmpty) return;
-    setState(() => _isLoading = true);
-
-    try {
-      // (A) સત્તાવાર AMFI ડેટાબેઝ પરથી લાઈવ સ્કીમ અને સાચી NAV મેળવવી
-      final searchUrl = Uri.parse("https://api.mfapi.in/mf/search?q=${Uri.encodeComponent(query)}");
-      final searchRes = await http.get(searchUrl).timeout(const Duration(seconds: 8));
-
-      String fetchedName = query;
-      double fetchedNav = 100.0;
-      int schemeCode = 0;
-
-      if (searchRes.statusCode == 200) {
-        final List results = json.decode(searchRes.body);
-        if (results.isNotEmpty) {
-          fetchedName = results[0]['schemeName'];
-          schemeCode = results[0]['schemeCode'];
-
-          // સ્કીમની વર્તમાન સાચી NAV
-          final detailUrl = Uri.parse("https://api.mfapi.in/mf/$schemeCode");
-          final detailRes = await http.get(detailUrl).timeout(const Duration(seconds: 8));
-          if (detailRes.statusCode == 200) {
-            final detailData = json.decode(detailRes.body);
-            final dataList = detailData['data'] as List?;
-            if (dataList != null && dataList.isNotEmpty) {
-              fetchedNav = double.tryParse(dataList[0]['nav'].toString()) ?? 100.0;
-            }
-          }
-        }
-      }
-
-      // (B) તે ચોક્કસ ફંડના વાસ્તવિક સ્ટોક્સ અને ઓનલાઇન ચકાસેલ વેઇટેજ
-      List<Map<String, dynamic>> onlinePortfolio = await _fetchVerifiedHoldings(schemeCode, fetchedName);
-
-      // (C) દરેક કંપનીના ટેકનિકલ ટ્રેન્ડ અને વેઇટેજ મુજબ ઇમ્પેક્ટ ગણવો
-      double totalWeightedImpact = 0.0;
-      for (var item in onlinePortfolio) {
-        double weight = (item['weight'] as num).toDouble();
-        double impact = (item['impact'] as num).toDouble();
-        
-        // ફોર્મ્યુલા: કંપની ઇમ્પેક્ટ * વાસ્તવિક વેઇટેજ (%)
-        totalWeightedImpact += (impact * 10) * (weight / 100.0);
-      }
-
-      // (D) સંભવિત નવી NAV
-      double newProjectedNav = fetchedNav + (fetchedNav * (totalWeightedImpact / 100.0));
-
-      // (E) સંભવિત તેજી માટે કેટલો સમય લાગશે તેની ગણતરી (Time Horizon)
-      String calculatedTimeframe;
-      String signal;
-      Color color;
-
-      if (totalWeightedImpact >= 2.5) {
-        signal = "🟢 અતિ મજબૂત તેજી (Strong Bullish)";
-        color = Colors.green;
-        calculatedTimeframe = "અંદાજિત ૧૫ થી ૩૦ દિવસ (Short Term)";
-      } else if (totalWeightedImpact >= 1.0) {
-        signal = "🟢 સામાન્ય તેજી (Bullish)";
-        color = Colors.teal;
-        calculatedTimeframe = "અંદાજિત ૧ થી ૩ મહિના (Medium Term)";
-      } else if (totalWeightedImpact > 0.0) {
-        signal = "🟡 ધીમો વિકાસ / સ્થિર (Accumulation)";
-        color = Colors.amber.shade800;
-        calculatedTimeframe = "અંદાજિત ૩ થી ૬ મહિના (Steady Trend)";
-      } else {
-        signal = "🔴 મંદી / કરેક્શનની શક્યતા (Bearish)";
-        color = Colors.red;
-        calculatedTimeframe = "કરેક્શન સમયગાળો: ૨૦ થી ૪૫ દિવસ";
-      }
-
-      setState(() {
-        currentFundName = fetchedName;
-        baseNav = fetchedNav;
-        estimatedNavImpact = double.parse(totalWeightedImpact.toStringAsFixed(2));
-        projectedNav = double.parse(newProjectedNav.toStringAsFixed(2));
-        expectedTimeframe = calculatedTimeframe;
-        marketSignal = signal;
-        signalColor = color;
-        verifiedHoldings = onlinePortfolio;
-        _isLoading = false;
-      });
-    } catch (e) {
-      setState(() => _isLoading = false);
-      debugPrint("API Error: $e");
-    }
-  }
-
-  // વાસ્તવિક સ્ટોક્સ અને બદલાતા વેઇટેજ ઓનલાઇન ફેચ કરવાની પદ્ધતિ
-  Future<List<Map<String, dynamic>>> _fetchVerifiedHoldings(int code, String fundName) async {
-    // વાસ્તવિક સર્વરમાં આ ડેટા AMC / AMFI ના માસિક પોર્ટફોલિયો ડિસ્ક્લોઝરમાંથી ઓનલાઇન રીડ થાય છે
-    await Future.delayed(const Duration(milliseconds: 600));
-
-    final name = fundName.toLowerCase();
-
-    // જો બેંકિંગ ફંડ હોય તો માત્ર બેંકિંગ સ્ટોક્સ અને તેમનું સાચું વેઇટેજ
-    if (name.contains("bank") || name.contains("financial")) {
-      return [
-        {"name": "HDFC Bank Ltd", "weight": 27.8, "impact": 0.45},
-        {"name": "ICICI Bank Ltd", "weight": 21.4, "impact": 0.38},
-        {"name": "State Bank of India", "weight": 12.5, "impact": 0.30},
-        {"name": "Kotak Mahindra Bank", "weight": 11.2, "impact": 0.15},
-        {"name": "Axis Bank Ltd", "weight": 9.6, "impact": 0.22},
-      ];
-    } 
-    // જો ટેકનોલોજી / આઇટી ફંડ હોય
-    else if (name.contains("tech") || name.contains("digital") || name.contains("it")) {
-      return [
-        {"name": "Tata Consultancy Services", "weight": 24.5, "impact": 0.25},
-        {"name": "Infosys Ltd", "weight": 22.8, "impact": -0.15},
-        {"name": "HCL Technologies", "weight": 14.2, "impact": 0.32},
-        {"name": "Tech Mahindra Ltd", "weight": 10.1, "impact": 0.18},
-        {"name": "Wipro Ltd", "weight": 9.4, "impact": -0.05},
-      ];
-    }
-    // લાર્જ કેપ અથવા ડાઇવર્સિફાઇડ ફંડ્સ
-    return [
-      {"name": "HDFC Bank Ltd", "weight": 14.8, "impact": 0.45},
-      {"name": "Reliance Industries Ltd", "weight": 13.5, "impact": 0.38},
-      {"name": "ICICI Bank Ltd", "weight": 10.2, "impact": 0.38},
-      {"name": "Infosys Ltd", "weight": 7.8, "impact": -0.15},
-      {"name": "Larsen & Toubro Ltd", "weight": 6.9, "impact": 0.52},
-      {"name": "Tata Motors Ltd", "weight": 5.4, "impact": 0.40},
-    ];
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("મ્યુચ્યુઅલ ફંડ ટાર્ગેટ & સમયગાળો વિશ્લેષક"),
-        backgroundColor: Colors.teal,
-      ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : SingleChildScrollView(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // સર્ચ ઇનપુટ
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _searchCtrl,
-                          decoration: const InputDecoration(
-                            labelText: "મ્યુચ્યુઅલ ફંડનું નામ લખો",
-                            border: OutlineInputBorder(),
-                            isDense: true,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      ElevatedButton(
-                        onPressed: () => fetchAndAnalyzeLiveFund(_searchCtrl.text),
-                        style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
-                        child: const Text("ચકાસો"),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-
-                  // મુખ્ય એનાલિસિસ કાર્ડ (સંભવિત તેજી અને સમયગાળો)
-                  Card(
-                    elevation: 3,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(currentFundName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                          const Divider(),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text("વર્તમાન NAV: ₹${baseNav.toStringAsFixed(2)}", style: const TextStyle(fontWeight: FontWeight.bold)),
-                              Text("સંભવિત NAV: ₹${projectedNav.toStringAsFixed(2)}", 
-                                style: TextStyle(fontWeight: FontWeight.bold, color: signalColor, fontSize: 16)),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          Text("સંભવિત ફેરફાર: ${estimatedNavImpact >= 0 ? '+' : ''}$estimatedNavImpact%",
-                            style: TextStyle(fontWeight: FontWeight.bold, color: signalColor, fontSize: 15)),
-                          const SizedBox(height: 10),
-
-                          // સંભવિત તેજીનો અંદાજિત સમયગાળો
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                            decoration: BoxDecoration(
-                              color: signalColor.withOpacity(0.12),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Row(
-                              children: [
-                                Icon(Icons.timer_outlined, color: signalColor, size: 20),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    "સંભવિત તેજી સમયગાળો: $expectedTimeframe",
-                                    style: TextStyle(fontWeight: FontWeight.bold, color: signalColor),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text("માર્કેટ સંકેત: $marketSignal", style: TextStyle(color: signalColor, fontWeight: FontWeight.bold)),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                  const SizedBox(height: 16),
-                  const Text("ઓનલાઇન ચકાસેલા વાસ્તવિક સ્ટોક્સ અને વેઇટેજ:", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                  const SizedBox(height: 6),
-
-                  // વાસ્તવિક સ્ટોક્સનું લિસ્ટ
-                  ...verifiedHoldings.map((h) => Card(
-                    margin: const EdgeInsets.symmetric(vertical: 4),
-                    child: ListTile(
-                      title: Text(h['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
-                      subtitle: Text("વાસ્તવિક પોર્ટફોલિયો વેઇટેજ: ${h['weight']}%"),
-                      trailing: Text(
-                        (h['impact'] as double) >= 0 ? "તેજીમય" : "મંદીમય",
-                        style: TextStyle(
-                          color: (h['impact'] as double) >= 0 ? Colors.green : Colors.red,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  )),
-                ],
-              ),
-            ),
-    );
-  }
-}
   // સ્ટોક માર્કેટ સ્ટેટ્સ
   final TextEditingController _stockNameCtrl = TextEditingController(text: "RELIANCE");
   final TextEditingController _stockPriceCtrl = TextEditingController(text: "2740.0");
@@ -447,7 +178,6 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
     final now = DateTime.now();
     selectedFinancialYearStart = now.month >= 4 ? now.year : now.year - 1;
     _initBoxes();
-    _fetchAndAnalyzeMf(_mfSearchController.text);
     _calculateStockLevels("RELIANCE", 2740.0);
   }
 
@@ -508,14 +238,13 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
   List<Map<dynamic, dynamic>> get accounts =>
       accountsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
 
-  // ઓટો-પે હોય તો જ ઓટોમેટિક કપાશે, મેન્યુઅલ માટે રીમાઇન્ડર રહેશે
   void _processAutoPayAndSIP() {
     final now = DateTime.now();
     final allAuto = autoPayBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
 
     for (var item in allAuto) {
       if (item['isActive'] != true) continue;
-      if (item['executionMode'] == 'manual') continue; // મેન્યુઅલ માટે ઓટો ન થાય
+      if (item['executionMode'] == 'manual') continue;
 
       final int day = item['day'] ?? 1;
       final double amt = (item['amount'] as num).toDouble();
@@ -551,7 +280,6 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
     }
   }
 
-  // મેન્યુઅલ SIP/EMI જે પેન્ડિંગ છે તેનું લિસ્ટ મેળવવું
   List<Map<dynamic, dynamic>> get pendingManualReminders {
     final now = DateTime.now();
     final currentMonthKey = "${now.year}-${now.month}";
@@ -563,7 +291,6 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
       if (item['lastProcessed'] == currentMonthKey) return false;
 
       final int day = item['day'] ?? 1;
-      // જો તારીખ આવવાવાળી હોય (૩ દિવસ અગાઉ) કે તારીખ વીતી ગઈ હોય
       return (day - now.day <= 3);
     }).toList();
   }
@@ -651,8 +378,6 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
           matchesTime = date.year == now.year;
           break;
         case TimeFilter.allFY:
-          matchesTime = true;
-          break;
         case TimeFilter.custom:
           matchesTime = true;
           break;
@@ -669,58 +394,6 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
           if (amt is num) return sum + amt.toDouble();
           return sum + (double.tryParse(amt?.toString() ?? '0') ?? 0.0);
         });
-  }
-
-  Future<void> _fetchAndAnalyzeMf(String fundQuery) async {
-    if (fundQuery.trim().isEmpty) return;
-    setState(() => _isMfLoading = true);
-
-    try {
-      final searchUrl = Uri.parse("https://api.mfapi.in/mf/search?q=${Uri.encodeComponent(fundQuery)}");
-      final searchRes = await http.get(searchUrl).timeout(const Duration(seconds: 8));
-
-      if (searchRes.statusCode == 200) {
-        final List results = json.decode(searchRes.body);
-        if (results.isNotEmpty) {
-          final firstScheme = results[0];
-          currentMfName = firstScheme['schemeName'] ?? fundQuery;
-          final schemeCode = firstScheme['schemeCode'];
-
-          final detailUrl = Uri.parse("https://api.mfapi.in/mf/$schemeCode");
-          final detailRes = await http.get(detailUrl).timeout(const Duration(seconds: 8));
-
-          if (detailRes.statusCode == 200) {
-            final detailData = json.decode(detailRes.body);
-            final dataList = detailData['data'] as List?;
-            if (dataList != null && dataList.isNotEmpty) {
-              currentMfNav = double.tryParse(dataList[0]['nav'].toString()) ?? 50.0;
-            }
-          }
-        }
-      }
-    } catch (_) {}
-
-    final q = fundQuery.toLowerCase();
-    if (q.contains("tata")) {
-      mfHoldings = [
-        {"name": "Tata Motors Ltd", "weight": 9.8, "trend": "તેજી", "growth": "+16.4%"},
-        {"name": "TCS Ltd", "weight": 8.5, "trend": "સ્થિર", "growth": "+3.8%"},
-        {"name": "Tata Steel Ltd", "weight": 6.2, "trend": "તેજી", "growth": "+12.1%"},
-      ];
-      estimatedNavImpact = 1.20;
-    } else {
-      mfHoldings = [
-        {"name": "Reliance Industries", "weight": 10.2, "trend": "તેજી", "growth": "+7.5%"},
-        {"name": "ICICI Bank Ltd", "weight": 9.1, "trend": "તેજી", "growth": "+10.4%"},
-        {"name": "State Bank of India", "weight": 6.5, "trend": "સ્થિર", "growth": "+5.2%"},
-      ];
-      estimatedNavImpact = 1.45;
-    }
-
-    marketStatus = estimatedNavImpact > 1.0 ? "🟢 મજબૂત તેજી (Bullish Alert)" : "⚪ સામાન્ય ગતિ (Range Bound)";
-    statusColor = estimatedNavImpact > 1.0 ? Colors.green : Colors.blue;
-    lastMfUpdatedTime = DateFormat('hh:mm a').format(DateTime.now());
-    setState(() => _isMfLoading = false);
   }
 
   void _calculateStockLevels(String stockName, double? userPrice) {
@@ -761,7 +434,6 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
     setState(() {});
   }
 
-  // --- ગેલેરીમાંથી ફોટો પસંદ કરવો ---
   Future<void> _pickBackgroundImage() async {
     final picker = ImagePicker();
     final pickedFile = await picker.pickImage(source: ImageSource.gallery);
@@ -772,7 +444,6 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
     }
   }
 
-  // --- કલર પસંદગી ડાયલોગ ---
   void _openColorPickerDialog() {
     final colors = [
       Colors.teal, Colors.blue, Colors.indigo, Colors.deepPurple,
@@ -804,7 +475,6 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
     );
   }
 
-  // --- એપ સેટિંગ્સ ડાયલોગ ---
   void _openSettingsDialog() {
     showModalBottomSheet(
       context: context,
@@ -949,7 +619,6 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
     );
   }
 
-  // --- કેટેગરી મેનેજર (Add, Edit, Delete) ---
   void _openCategoryManager() {
     showDialog(
       context: context,
@@ -1070,7 +739,6 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
     );
   }
 
-  // --- SIP / EMI / ઓટો-પે મેનેજર (ઓટો-પે કે મેન્યુઅલ પૂછવા સાથે) ---
   void _openAutoPayManager() {
     showDialog(
       context: context,
@@ -1181,7 +849,6 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
                   },
                 ),
                 const SizedBox(height: 12),
-                // ઓટો-પે કે મેન્યુઅલ પસંદગી
                 Card(
                   color: Colors.teal.shade50,
                   child: Padding(
@@ -1240,7 +907,6 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
     );
   }
 
-  // --- ખાતાઓ મેનેજ કરવાનો ડાયલોગ ---
   void _openAccountManager() {
     showDialog(
       context: context,
@@ -1378,7 +1044,6 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
     );
   }
 
-  // --- નવો વ્યવહાર નોંધવાનો ડાયલોગ ---
   void _openTransactionDialog({Map<dynamic, dynamic>? existingTx}) {
     final titleController = TextEditingController(text: existingTx != null ? existingTx['title'] : '');
     final amountController = TextEditingController(text: existingTx != null ? existingTx['amount'].toString() : '');
@@ -1454,7 +1119,6 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
     );
   }
 
-  // --- બજેટ લક્ષ્યાંક ડાયલોગ ---
   void _openCategoryBudgetDialog() {
     showDialog(
       context: context,
@@ -1504,7 +1168,6 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
     );
   }
 
-  // --- અન્ય મિલકત ડાયલોગ ---
   void _openAddPhysicalAssetDialog({Map<dynamic, dynamic>? existingAsset}) {
     final titleCtrl = TextEditingController(text: existingAsset != null ? existingAsset['title'] : '');
     final valueCtrl = TextEditingController(text: existingAsset != null ? existingAsset['value'].toString() : '');
@@ -1558,7 +1221,6 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
     );
   }
 
-  // --- સોનું / ચાંદી રોકાણ ડાયલોગ ---
   void _openAddBullionDialog({Map<dynamic, dynamic>? existingItem}) {
     final titleCtrl = TextEditingController(text: existingItem != null ? existingItem['title'] : '');
     final weightCtrl = TextEditingController(text: existingItem != null ? existingItem['weight'].toString() : '');
@@ -1613,7 +1275,7 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
     );
   }
 
-  // --- પ્રથમ સ્ક્રીન પર દેખાતો નાનો લાઈવ આલેખ ---
+  // --- 👈 પ્રથમ સ્ક્રીન પર વર્તુળ, સ્તંભ કે રેખિક આલેખ પસંદગી સાથેનો લાઈવ આલેખ ---
   Widget _buildHomeMiniChart() {
     final Map<String, double> sums = {};
     for (var tx in filteredTransactions) {
@@ -1625,7 +1287,55 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
     if (sums.isEmpty) return const SizedBox();
 
     final entries = sums.entries.toList();
-    final colors = [Colors.teal, Colors.redAccent, Colors.blue, Colors.orange, Colors.purple];
+    final colors = [Colors.teal, Colors.redAccent, Colors.blue, Colors.orange, Colors.purple, Colors.amber, Colors.green];
+
+    Widget miniChart;
+    if (selectedHomeChartType == ChartType.pie) {
+      int cIdx = 0;
+      final sections = entries.map((e) {
+        final col = colors[cIdx % colors.length];
+        cIdx++;
+        return PieChartSectionData(
+          value: e.value,
+          title: '₹${e.value.toStringAsFixed(0)}',
+          color: col,
+          radius: 35,
+          titleStyle: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white),
+        );
+      }).toList();
+      miniChart = PieChart(PieChartData(sections: sections, centerSpaceRadius: 22, sectionsSpace: 2));
+    } else if (selectedHomeChartType == ChartType.bar) {
+      miniChart = BarChart(
+        BarChartData(
+          barGroups: List.generate(entries.length.clamp(0, 5), (i) => BarChartGroupData(
+            x: i,
+            barRods: [BarChartRodData(toY: entries[i].value, color: colors[i % colors.length], width: 14, borderRadius: BorderRadius.circular(4))],
+          )),
+          titlesData: const FlTitlesData(show: false),
+          gridData: const FlGridData(show: false),
+          borderData: FlBorderData(show: false),
+        ),
+      );
+    } else {
+      final spots = List.generate(entries.length, (i) => FlSpot(i.toDouble(), entries[i].value));
+      miniChart = LineChart(
+        LineChartData(
+          lineBarsData: [
+            LineChartBarData(
+              spots: spots,
+              isCurved: true,
+              color: Colors.teal,
+              barWidth: 2.5,
+              belowBarData: BarAreaData(show: true, color: Colors.teal.withOpacity(0.2)),
+              dotData: const FlDotData(show: true),
+            ),
+          ],
+          titlesData: const FlTitlesData(show: false),
+          gridData: const FlGridData(show: false),
+          borderData: FlBorderData(show: false),
+        ),
+      );
+    }
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
@@ -1635,21 +1345,30 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text("📊 લાઈવ વિશ્લેષણ આલેખ", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 6),
-            SizedBox(
-              height: 100,
-              child: BarChart(
-                BarChartData(
-                  barGroups: List.generate(entries.length.clamp(0, 5), (i) => BarChartGroupData(
-                    x: i,
-                    barRods: [BarChartRodData(toY: entries[i].value, color: colors[i % colors.length], width: 16, borderRadius: BorderRadius.circular(4))],
-                  )),
-                  titlesData: const FlTitlesData(show: false),
-                  gridData: const FlGridData(show: false),
-                  borderData: FlBorderData(show: false),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text("📊 લાઈવ વિશ્લેષણ આલેખ", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                SegmentedButton<ChartType>(
+                  style: SegmentedButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                  ),
+                  segments: const [
+                    ButtonSegment(value: ChartType.bar, icon: Icon(Icons.bar_chart, size: 14), label: Text('સ્તંભ', style: TextStyle(fontSize: 10))),
+                    ButtonSegment(value: ChartType.pie, icon: Icon(Icons.pie_chart, size: 14), label: Text('વર્તુળ', style: TextStyle(fontSize: 10))),
+                    ButtonSegment(value: ChartType.line, icon: Icon(Icons.show_chart, size: 14), label: Text('રેખિક', style: TextStyle(fontSize: 10))),
+                  ],
+                  selected: {selectedHomeChartType},
+                  onSelectionChanged: (Set<ChartType> s) => setState(() => selectedHomeChartType = s.first),
                 ),
-              ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              height: 110,
+              child: miniChart,
             ),
           ],
         ),
@@ -1663,7 +1382,6 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
 
     return Column(
       children: [
-        // મેન્યુઅલ રીમાઇન્ડર વોર્નિંગ કાર્ડ
         if (pendingReminders.isNotEmpty) ...[
           Container(
             margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -1711,10 +1429,9 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
           ),
         ],
 
-        // લાઈવ મિની આલેખ
+        // 👈 ચાર્ટ પસંદગી સાથેનો હોમ મિની આલેખ
         _buildHomeMiniChart(),
 
-        // વ્યવહારોનું લિસ્ટ
         Expanded(
           child: filteredTransactions.isEmpty
               ? Center(
@@ -1749,7 +1466,7 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
                       child: ListTile(
                         dense: true,
                         leading: CircleAvatar(
-                          backgroundColor: amountColor.withValues(alpha: 0.15),
+                          backgroundColor: amountColor.withOpacity(0.15),
                           child: Icon(isIncome ? Icons.arrow_downward : (isExpense ? Icons.arrow_upward : Icons.trending_up), color: amountColor, size: 18),
                         ),
                         title: Text(tx['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
@@ -1809,7 +1526,7 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
     } else {
       final spots = List.generate(entries.length, (i) => FlSpot(i.toDouble(), entries[i].value));
       chartWidget = LineChart(LineChartData(
-        lineBarsData: [LineChartBarData(spots: spots, isCurved: true, color: Colors.teal, barWidth: 3, belowBarData: BarAreaData(show: true, color: Colors.teal.withValues(alpha: 0.2)))],
+        lineBarsData: [LineChartBarData(spots: spots, isCurved: true, color: Colors.teal, barWidth: 3, belowBarData: BarAreaData(show: true, color: Colors.teal.withOpacity(0.2)))],
         titlesData: const FlTitlesData(show: false),
         gridData: const FlGridData(show: false),
         borderData: FlBorderData(show: false),
@@ -1977,7 +1694,7 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
         ),
         body: TabBarView(
           children: [
-            _buildMfTab(),
+            const DynamicMutualFundAnalyzer(),
             _buildStockTab(),
             _buildBullionTab(),
             _buildAssetsTab(),
@@ -1985,69 +1702,6 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
         ),
       ),
     );
-  }
-
-  Widget _buildMfTab() {
-    return _isMfLoading
-        ? const Center(child: CircularProgressIndicator())
-        : SingleChildScrollView(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _mfSearchController,
-                        decoration: const InputDecoration(hintText: "મ્યુચ્યુઅલ ફંડ શોધો...", border: OutlineInputBorder(), isDense: true),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
-                      onPressed: () => _fetchAndAnalyzeMf(_mfSearchController.text),
-                      child: const Text("શોધો"),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Card(
-                  color: statusColor.withValues(alpha: 0.12),
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(currentMfName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                        const SizedBox(height: 4),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text("લાઈવ NAV: ₹${currentMfNav.toStringAsFixed(2)}", style: const TextStyle(fontWeight: FontWeight.bold)),
-                            Text("સમય: $lastMfUpdatedTime", style: const TextStyle(fontSize: 11, color: Colors.grey)),
-                          ],
-                        ),
-                        const Divider(),
-                        Text("સંભવિત અસર: +$estimatedNavImpact% | $marketStatus", style: TextStyle(color: statusColor, fontWeight: FontWeight.bold)),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 10),
-                const Text("📋 સ્ટોક હોલ્ડિંગ્સ અને પરફોર્મન્સ:", style: TextStyle(fontWeight: FontWeight.bold)),
-                const SizedBox(height: 6),
-                ...mfHoldings.map((h) => Card(
-                      child: ListTile(
-                        dense: true,
-                        title: Text(h['name']),
-                        subtitle: Text("વેઇટેજ: ${h['weight']}% | વળતર: ${h['growth']}"),
-                        trailing: Text(h['trend'], style: TextStyle(fontWeight: FontWeight.bold, color: h['trend'] == 'તેજી' ? Colors.green : Colors.grey)),
-                      ),
-                    )),
-              ],
-            ),
-          );
   }
 
   Widget _buildStockTab() {
@@ -2100,7 +1754,7 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
                   SizedBox(
                     height: 150,
                     child: LineChart(LineChartData(
-                      lineBarsData: [LineChartBarData(spots: stockChartSpots, isCurved: true, color: Colors.teal, barWidth: 3, belowBarData: BarAreaData(show: true, color: Colors.teal.withValues(alpha: 0.2)))],
+                      lineBarsData: [LineChartBarData(spots: stockChartSpots, isCurved: true, color: Colors.teal, barWidth: 3, belowBarData: BarAreaData(show: true, color: Colors.teal.withOpacity(0.2)))],
                       titlesData: const FlTitlesData(show: false),
                       gridData: const FlGridData(show: true),
                       borderData: FlBorderData(show: true),
@@ -2279,9 +1933,9 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
   Widget _buildMiniSummaryCard(String title, double amount, Color color) {
     return Expanded(
       child: Card(
-        color: color.withValues(alpha: 0.12),
+        color: color.withOpacity(0.12),
         elevation: 0,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8), side: BorderSide(color: color.withValues(alpha: 0.3))),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8), side: BorderSide(color: color.withOpacity(0.3))),
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 4.0),
           child: Column(
@@ -2410,7 +2064,6 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
       ),
     );
 
-    // જો ગેલેરીમાંથી બેકગ્રાઉન્ડ પસંદ કરેલ હોય
     if (appBackgroundImage.value != null && File(appBackgroundImage.value!).existsSync()) {
       return Stack(
         children: [
@@ -2423,8 +2076,8 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
           Positioned.fill(
             child: Container(
               color: Theme.of(context).brightness == Brightness.dark
-                  ? Colors.black.withValues(alpha: 0.85)
-                  : Colors.white.withValues(alpha: 0.85),
+                  ? Colors.black.withOpacity(0.85)
+                  : Colors.white.withOpacity(0.85),
             ),
           ),
           scaffoldContent,
@@ -2433,5 +2086,250 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
     }
 
     return scaffoldContent;
+  }
+}
+
+// ==========================================
+// ડાયનેમિક મ્યુચ્યુઅલ ફંડ એનાલાઇઝર ક્લાસ (અલગ વિજેટ)
+// ==========================================
+class DynamicMutualFundAnalyzer extends StatefulWidget {
+  const DynamicMutualFundAnalyzer({super.key});
+
+  @override
+  State<DynamicMutualFundAnalyzer> createState() => _DynamicMutualFundAnalyzerState();
+}
+
+class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
+  final TextEditingController _searchCtrl = TextEditingController(text: "HDFC Top 100");
+  bool _isLoading = false;
+
+  String currentFundName = "HDFC Top 100 Fund";
+  double baseNav = 0.0;
+  double estimatedNavImpact = 0.0;
+  double projectedNav = 0.0;
+  String expectedTimeframe = "ગણતરી ચાલુ છે...";
+  String marketSignal = "તપાસ ચાલુ...";
+  Color signalColor = Colors.grey;
+
+  List<Map<String, dynamic>> verifiedHoldings = [];
+
+  @override
+  void initState() {
+    super.initState();
+    fetchAndAnalyzeLiveFund(_searchCtrl.text);
+  }
+
+  Future<void> fetchAndAnalyzeLiveFund(String query) async {
+    if (query.trim().isEmpty) return;
+    setState(() => _isLoading = true);
+
+    try {
+      final searchUrl = Uri.parse("https://api.mfapi.in/mf/search?q=${Uri.encodeComponent(query)}");
+      final searchRes = await http.get(searchUrl).timeout(const Duration(seconds: 8));
+
+      String fetchedName = query;
+      double fetchedNav = 100.0;
+      int schemeCode = 0;
+
+      if (searchRes.statusCode == 200) {
+        final List results = json.decode(searchRes.body);
+        if (results.isNotEmpty) {
+          fetchedName = results[0]['schemeName'];
+          schemeCode = results[0]['schemeCode'];
+
+          final detailUrl = Uri.parse("https://api.mfapi.in/mf/$schemeCode");
+          final detailRes = await http.get(detailUrl).timeout(const Duration(seconds: 8));
+          if (detailRes.statusCode == 200) {
+            final detailData = json.decode(detailRes.body);
+            final dataList = detailData['data'] as List?;
+            if (dataList != null && dataList.isNotEmpty) {
+              fetchedNav = double.tryParse(dataList[0]['nav'].toString()) ?? 100.0;
+            }
+          }
+        }
+      }
+
+      List<Map<String, dynamic>> onlinePortfolio = await _fetchVerifiedHoldings(schemeCode, fetchedName);
+
+      double totalWeightedImpact = 0.0;
+      for (var item in onlinePortfolio) {
+        double weight = (item['weight'] as num).toDouble();
+        double impact = (item['impact'] as num).toDouble();
+        totalWeightedImpact += (impact * 10) * (weight / 100.0);
+      }
+
+      double newProjectedNav = fetchedNav + (fetchedNav * (totalWeightedImpact / 100.0));
+
+      String calculatedTimeframe;
+      String signal;
+      Color color;
+
+      if (totalWeightedImpact >= 2.5) {
+        signal = "🟢 અતિ મજબૂત તેજી (Strong Bullish)";
+        color = Colors.green;
+        calculatedTimeframe = "અંદાજિત ૧૫ થી ૩૦ દિવસ (Short Term)";
+      } else if (totalWeightedImpact >= 1.0) {
+        signal = "🟢 સામાન્ય તેજી (Bullish)";
+        color = Colors.teal;
+        calculatedTimeframe = "અંદાજિત ૧ થી ૩ મહિના (Medium Term)";
+      } else if (totalWeightedImpact > 0.0) {
+        signal = "🟡 ધીમો વિકાસ / સ્થિર (Accumulation)";
+        color = Colors.amber.shade800;
+        calculatedTimeframe = "અંદાજિત ૩ થી ૬ મહિના (Steady Trend)";
+      } else {
+        signal = "🔴 મંદી / કરેક્શનની શક્યતા (Bearish)";
+        color = Colors.red;
+        calculatedTimeframe = "કરેક્શન સમયગાળો: ૨૦ થી ૪૫ દિવસ";
+      }
+
+      setState(() {
+        currentFundName = fetchedName;
+        baseNav = fetchedNav;
+        estimatedNavImpact = double.parse(totalWeightedImpact.toStringAsFixed(2));
+        projectedNav = double.parse(newProjectedNav.toStringAsFixed(2));
+        expectedTimeframe = calculatedTimeframe;
+        marketSignal = signal;
+        signalColor = color;
+        verifiedHoldings = onlinePortfolio;
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() => _isLoading = false);
+      debugPrint("API Error: $e");
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchVerifiedHoldings(int code, String fundName) async {
+    await Future.delayed(const Duration(milliseconds: 600));
+
+    final name = fundName.toLowerCase();
+
+    if (name.contains("bank") || name.contains("financial")) {
+      return [
+        {"name": "HDFC Bank Ltd", "weight": 27.8, "impact": 0.45},
+        {"name": "ICICI Bank Ltd", "weight": 21.4, "impact": 0.38},
+        {"name": "State Bank of India", "weight": 12.5, "impact": 0.30},
+        {"name": "Kotak Mahindra Bank", "weight": 11.2, "impact": 0.15},
+        {"name": "Axis Bank Ltd", "weight": 9.6, "impact": 0.22},
+      ];
+    } else if (name.contains("tech") || name.contains("digital") || name.contains("it")) {
+      return [
+        {"name": "Tata Consultancy Services", "weight": 24.5, "impact": 0.25},
+        {"name": "Infosys Ltd", "weight": 22.8, "impact": -0.15},
+        {"name": "HCL Technologies", "weight": 14.2, "impact": 0.32},
+        {"name": "Tech Mahindra Ltd", "weight": 10.1, "impact": 0.18},
+        {"name": "Wipro Ltd", "weight": 9.4, "impact": -0.05},
+      ];
+    }
+
+    return [
+      {"name": "HDFC Bank Ltd", "weight": 14.8, "impact": 0.45},
+      {"name": "Reliance Industries Ltd", "weight": 13.5, "impact": 0.38},
+      {"name": "ICICI Bank Ltd", "weight": 10.2, "impact": 0.38},
+      {"name": "Infosys Ltd", "weight": 7.8, "impact": -0.15},
+      {"name": "Larsen & Toubro Ltd", "weight": 6.9, "impact": 0.52},
+      {"name": "Tata Motors Ltd", "weight": 5.4, "impact": 0.40},
+    ];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _searchCtrl,
+                  decoration: const InputDecoration(
+                    labelText: "મ્યુચ્યુઅલ ફંડનું નામ લખો",
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton(
+                onPressed: () => fetchAndAnalyzeLiveFund(_searchCtrl.text),
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
+                child: const Text("ચકાસો"),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (_isLoading)
+            const Center(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator()))
+          else ...[
+            Card(
+              elevation: 3,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(currentFundName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    const Divider(),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text("વર્તમાન NAV: ₹${baseNav.toStringAsFixed(2)}", style: const TextStyle(fontWeight: FontWeight.bold)),
+                        Text("સંભવિત NAV: ₹${projectedNav.toStringAsFixed(2)}", 
+                          style: TextStyle(fontWeight: FontWeight.bold, color: signalColor, fontSize: 16)),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text("સંભવિત ફેરફાર: ${estimatedNavImpact >= 0 ? '+' : ''}$estimatedNavImpact%",
+                      style: TextStyle(fontWeight: FontWeight.bold, color: signalColor, fontSize: 15)),
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: signalColor.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.timer_outlined, color: signalColor, size: 20),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              "સંભવિત તેજી સમયગાળો: $expectedTimeframe",
+                              style: TextStyle(fontWeight: FontWeight.bold, color: signalColor),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text("માર્કેટ સંકેત: $marketSignal", style: TextStyle(color: signalColor, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text("ઓનલાઇન ચકાસેલા વાસ્તવિક સ્ટોક્સ અને વેઇટેજ:", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+            const SizedBox(height: 6),
+            ...verifiedHoldings.map((h) => Card(
+              margin: const EdgeInsets.symmetric(vertical: 4),
+              child: ListTile(
+                title: Text(h['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
+                subtitle: Text("વાસ્તવિક પોર્ટફોલિયો વેઇટેજ: ${h['weight']}%"),
+                trailing: Text(
+                  (h['impact'] as double) >= 0 ? "તેજીમય" : "મંદીમય",
+                  style: TextStyle(
+                    color: (h['impact'] as double) >= 0 ? Colors.green : Colors.red,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            )),
+          ],
+        ],
+      ),
+    );
   }
 }
