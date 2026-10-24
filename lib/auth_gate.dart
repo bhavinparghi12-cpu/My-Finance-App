@@ -37,11 +37,13 @@ class _AuthGateState extends State<AuthGate> {
     if (lastEmail != null && lastEmail.isNotEmpty) {
       _emailController.text = lastEmail;
       final hasPwd = await SecurityService.isPasswordSetForEmail(lastEmail);
+      if (!mounted) return;
       setState(() {
         _isFirstTime = !hasPwd;
         _isLoading = false;
       });
     } else {
+      if (!mounted) return;
       setState(() {
         _isFirstTime = true;
         _isLoading = false;
@@ -53,6 +55,7 @@ class _AuthGateState extends State<AuthGate> {
     final cleanEmail = email.trim().toLowerCase();
     if (cleanEmail.contains('@') && cleanEmail.contains('.')) {
       final hasPwd = await SecurityService.isPasswordSetForEmail(cleanEmail);
+      if (!mounted) return;
       setState(() {
         _isFirstTime = !hasPwd;
         _errorMessage = '';
@@ -60,18 +63,18 @@ class _AuthGateState extends State<AuthGate> {
     }
   }
 
-  // --- ઓથેન્ટિકેશન ફંક્શન ---
   Future<void> _authenticate() async {
     final email = _emailController.text.trim().toLowerCase();
     final pwd = _passwordController.text.trim();
 
+    // સુધારેલ ઈમેઈલ અને પાસવર્ડ વેલિડેશન
     if (!email.contains('@') || !email.contains('.')) {
-      setState(() => _errorMessage = 'માન્ય ઈમેઈલ એડ્રેસ દાખલ કરો');
+      setState(() => _errorMessage = 'માન્ય ઈમેઈલ એડ્રેસ દાખલ કરો.');
       return;
     }
 
     if (pwd.isEmpty) {
-      setState(() => _errorMessage = 'પાસવર્ડ ખાલી હોઈ શકે નહીં');
+      setState(() => _errorMessage = 'પાસવર્ડ ખાલી હોઈ શકે નહીં.');
       return;
     }
 
@@ -79,7 +82,6 @@ class _AuthGateState extends State<AuthGate> {
 
     try {
       if (_isFirstTime) {
-        // ૧. નવું એકાઉન્ટ બનાવવાનો પ્રયત્ન
         try {
           await FirebaseAuth.instance.createUserWithEmailAndPassword(
             email: email,
@@ -87,7 +89,6 @@ class _AuthGateState extends State<AuthGate> {
           );
         } on FirebaseAuthException catch (e) {
           if (e.code == 'email-already-in-use') {
-            // જો એકાઉન્ટ પહેલેથી હાજર હોય તો સાઇન-ઇન કરો
             await FirebaseAuth.instance.signInWithEmailAndPassword(
               email: email,
               password: pwd,
@@ -100,7 +101,6 @@ class _AuthGateState extends State<AuthGate> {
         await SecurityService.setupUserAccount(email, pwd);
         await _openUserDatabaseAndNavigate(email);
       } else {
-        // ૨. સીધું સાઇન-ઇન કરો
         await FirebaseAuth.instance.signInWithEmailAndPassword(
           email: email,
           password: pwd,
@@ -111,6 +111,7 @@ class _AuthGateState extends State<AuthGate> {
         await _openUserDatabaseAndNavigate(email);
       }
     } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
       setState(() {
         if (e.code == 'wrong-password' || e.code == 'invalid-credential') {
           _errorMessage = 'ખોટો પાસવર્ડ! કૃપા કરીને સાચો પાસવર્ડ નાખો અથવા નીચેથી રીસેટ કરો.';
@@ -123,20 +124,19 @@ class _AuthGateState extends State<AuthGate> {
         }
       });
     } catch (e) {
-      // ઑફલાઇન બેકઅપ તપાસ
       final isValid = await SecurityService.verifyPassword(email, pwd);
       if (isValid) {
         await SecurityService.setLastActiveEmail(email);
         await _openUserDatabaseAndNavigate(email);
       } else {
+        if (!mounted) return;
         setState(() {
-          _errorMessage = 'ખોટો પાસવર્ડ અથવા કનેક્શન એરર.';
+          _errorMessage = 'ખોટો પાસવર્ડ અથવા નેટવર્ક એરર.';
         });
       }
     }
   }
 
-  // --- પાસવર્ડ રીસેટ લિંક મોકલવી ---
   Future<void> _sendResetPasswordLink() async {
     final email = _emailController.text.trim().toLowerCase();
 
@@ -144,7 +144,7 @@ class _AuthGateState extends State<AuthGate> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           backgroundColor: Colors.red,
-          content: Text('કૃપા કરીને પહેલાં માન્ય ઈમેઈલ એડ્રેસ દાખલ કરો.'),
+          content: Text('કૃપા કરીને પહેલાં માન્ય ઈમેઈલ એડ્રેસ દાખલ કરો.', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         ),
       );
       return;
@@ -152,31 +152,29 @@ class _AuthGateState extends State<AuthGate> {
 
     try {
       await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
-
       if (!mounted) return;
+
       showDialog(
         context: context,
         builder: (ctx) => AlertDialog(
+          backgroundColor: Colors.white,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: const Row(
             children: [
               Icon(Icons.mark_email_read, color: Colors.teal),
               SizedBox(width: 8),
-              Text('રીસેટ લિંક મોકલાઈ ગઈ', style: TextStyle(fontSize: 18)),
+              Text('રીસેટ લિંક મોકલાઈ ગઈ', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87)),
             ],
           ),
           content: Text(
-            '$email પર પાસવર્ડ રીસેટ કરવાની લિંક મોકલી દેવાઈ છે.\n\nકૃપા કરીને તમારું Gmail/ઇનબોક્સ (અથવા Spam ફોલ્ડર) તપાસો અને ત્યાં આપેલી લિંક પર ક્લિક કરીને નવો પાસવર્ડ સેટ કરો.',
-            style: const TextStyle(fontSize: 14),
+            '$email પર પાસવર્ડ રીસેટ કરવાની લિંક મોકલી દેવાઈ છે.\nકૃપા કરીને તમારું Gmail/ઈમેઈલ (અથવા Spam ફોલ્ડર) તપાસો અને ત્યાં આપેલી લિંક પરથી નવો પાસવર્ડ બનાવો.',
+            style: const TextStyle(fontSize: 14, color: Colors.black87, height: 1.4),
           ),
           actions: [
             ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.teal,
-                foregroundColor: Colors.white,
-              ),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
               onPressed: () => Navigator.pop(ctx),
-              child: const Text('સમજાઈ ગયું'),
+              child: const Text('સમજાઈ ગયું', style: TextStyle(fontWeight: FontWeight.bold)),
             ),
           ],
         ),
@@ -184,21 +182,19 @@ class _AuthGateState extends State<AuthGate> {
     } on FirebaseAuthException catch (e) {
       String msg = 'લિંક મોકલવામાં ભૂલ આવી.';
       if (e.code == 'user-not-found') {
-        msg = 'આ ઈમેઈલ ધરાવતું કોઈ એકાઉન્ટ મળ્યું નથી.';
+        msg = 'આ ઈમેઈલ પરનું એકાઉન્ટ મળ્યું નથી.';
       } else if (e.code == 'invalid-email') {
         msg = 'ઈમેઈલ એડ્રેસ અમાન્ય છે.';
       }
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(backgroundColor: Colors.red, content: Text(msg)),
-        );
-      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(backgroundColor: Colors.red, content: Text(msg, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))),
+      );
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(backgroundColor: Colors.red, content: Text('એરર: $e')),
-        );
-      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(backgroundColor: Colors.red, content: Text('એરર: $e', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))),
+      );
     }
   }
 
@@ -221,111 +217,167 @@ class _AuthGateState extends State<AuthGate> {
       await Hive.openBox(txBoxName, encryptionCipher: cipher);
     }
 
-    if (mounted) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (_) => DashboardScreen(
-            userEmail: email,
-            catBoxName: catBoxName,
-            accBoxName: accBoxName,
-            txBoxName: txBoxName,
-          ),
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DashboardScreen(
+          userEmail: email,
+          catBoxName: catBoxName,
+          accBoxName: accBoxName,
+          txBoxName: txBoxName,
         ),
-      );
-    }
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator(color: Colors.teal)),
+      );
     }
 
     return Scaffold(
-      backgroundColor: Colors.grey[100],
+      backgroundColor: Colors.grey.shade100, // આછું બેકગ્રાઉન્ડ
       body: Center(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 26.0),
+          padding: const EdgeInsets.symmetric(horizontal: 24.0),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               const Icon(Icons.lock_person_outlined, size: 75, color: Colors.teal),
-              const SizedBox(height: 12),
+              const SizedBox(height: 14),
+
+              // ૧. મુખ્ય શીર્ષક - હંમેશા ઘાટું અને સ્પષ્ટ
               Text(
                 _isFirstTime ? 'નવું સુરક્ષિત એકાઉન્ટ બનાવો' : 'નાણાકીય વૉલ્ટ અનલૉક કરો',
-                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.black87, // કાળો રંગ જેથી ૧૦૦% સ્પષ્ટ દેખાય
+                ),
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 8),
+
+              // ૨. સબટાઇટલ - ડાર્ક ગ્રે કલર
               Text(
                 _isFirstTime
-                    ? 'તમારો ડેટા તમારા ચોક્કસ ઈમેઈલ અને AES-256 થી લોક રહેશે'
+                    ? 'તમારો ડેટા તમારા મોબાઇલ ડિવાઇસ અને AES-256 થી લોક રહેશે'
                     : 'પ્રવેશવા માટે તમારો માસ્ટર પાસવર્ડ દાખલ કરો',
                 textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.grey, fontSize: 13),
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                  color: Colors.grey.shade800, // ઘાટો ગ્રે જેથી બેકગ્રાઉન્ડ સાથે ભળી ન જાય
+                ),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 26),
+
+              // ૩. ઈમેઈલ ઇનપુટ ફિલ્ડ
               TextField(
                 controller: _emailController,
                 keyboardType: TextInputType.emailAddress,
+                style: const TextStyle(color: Colors.black87, fontSize: 15, fontWeight: FontWeight.w500),
                 onChanged: _onEmailChanged,
                 decoration: InputDecoration(
                   labelText: 'ગૂગલ / રિકવરી ઈમેઈલ એડ્રેસ',
-                  prefixIcon: const Icon(Icons.email_outlined),
+                  labelStyle: TextStyle(color: Colors.grey.shade800, fontWeight: FontWeight.w600),
+                  prefixIcon: const Icon(Icons.email_outlined, color: Colors.teal),
                   filled: true,
                   fillColor: Colors.white,
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: Colors.grey.shade400, width: 1.2),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: Colors.teal, width: 1.8),
+                  ),
                 ),
               ),
               const SizedBox(height: 16),
+
+              // ૪. પાસવર્ડ ઇનપુટ ફિલ્ડ
               TextField(
                 controller: _passwordController,
                 obscureText: _obscurePassword,
                 keyboardType: TextInputType.visiblePassword,
+                style: const TextStyle(color: Colors.black87, fontSize: 15, fontWeight: FontWeight.w500),
                 decoration: InputDecoration(
                   labelText: 'માસ્ટર પાસવર્ડ',
-                  hintText: 'દા.ત. P@ss#2026!xyz',
-                  errorText: _errorMessage.isEmpty ? null : _errorMessage,
-                  prefixIcon: const Icon(Icons.password),
+                  labelStyle: TextStyle(color: Colors.grey.shade800, fontWeight: FontWeight.w600),
+                  prefixIcon: const Icon(Icons.password, color: Colors.teal),
                   suffixIcon: IconButton(
-                    icon: Icon(_obscurePassword ? Icons.visibility_off : Icons.visibility),
+                    icon: Icon(
+                      _obscurePassword ? Icons.visibility_off : Icons.visibility,
+                      color: Colors.grey.shade700,
+                    ),
                     onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
                   ),
                   filled: true,
                   fillColor: Colors.white,
+                  errorText: _errorMessage.isEmpty ? null : _errorMessage,
+                  errorMaxLines: 2,
+                  errorStyle: TextStyle(
+                    color: Colors.red.shade800, // ડાર્ક લાલ કલર
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12.5,
+                  ),
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: Colors.grey.shade400, width: 1.2),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: Colors.teal, width: 1.8),
+                  ),
                 ),
                 onSubmitted: (_) => _authenticate(),
               ),
-              const SizedBox(height: 20),
-              ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(
-                  minimumSize: const Size.fromHeight(50),
-                  backgroundColor: Colors.teal,
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                ),
-                onPressed: _authenticate,
-                icon: const Icon(Icons.lock_open),
-                label: Text(_isFirstTime ? 'એકાઉન્ટ બનાવી પ્રવેશ કરો' : 'અનલૉક કરો'),
-              ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 22),
 
-              // 👈 અહીંથી શરત હટાવી દીધી છે, જેથી પ્રથમથી જ રીસેટ લિંકનું બટન હંમેશાં દેખાશે
-              TextButton.icon(
-                onPressed: _sendResetPasswordLink,
-                icon: const Icon(Icons.lock_reset, size: 22, color: Colors.teal),
-                label: const Text(
-                  'પાસવર્ડ ભૂલી ગયા છો? (લિંક વડે રીસેટ કરો)',
-                  style: TextStyle(
-                    color: Colors.teal,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 14,
+              // ૫. અનલૉક / સેવ બટન
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    minimumSize: const Size.fromHeight(50),
+                    backgroundColor: Colors.teal,
+                    foregroundColor: Colors.white,
+                    elevation: 2,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  onPressed: _authenticate,
+                  icon: const Icon(Icons.lock_open, color: Colors.white),
+                  label: Text(
+                    _isFirstTime ? 'એકાઉન્ટ બનાવો અને પ્રવેશ કરો' : 'અનલૉક કરો',
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
                   ),
                 ),
               ),
+              const SizedBox(height: 18),
 
-              // મોડ બદલવા માટેનો વિકલ્પ (નવું એકાઉન્ટ / સાઇન ઇન)
+              // ૬. પાસવર્ડ ભૂલી ગયા છો લિંક
+              if (!_isFirstTime)
+                TextButton.icon(
+                  onPressed: _sendResetPasswordLink,
+                  icon: const Icon(Icons.lock_reset, size: 20, color: Colors.teal),
+                  label: const Text(
+                    'પાસવર્ડ ભૂલી ગયા છો? (લિંક વડે રીસેટ કરો)',
+                    style: TextStyle(
+                      color: Colors.teal,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                ),
+
+              // ૭. મોડ સ્વિચ બટન
               TextButton(
                 onPressed: () {
                   setState(() {
@@ -337,7 +389,11 @@ class _AuthGateState extends State<AuthGate> {
                   _isFirstTime
                       ? 'પહેલેથી એકાઉન્ટ છે? લૉગિન કરો'
                       : 'નવું એકાઉન્ટ બનાવવું છે? અહીં ક્લિક કરો',
-                  style: const TextStyle(fontSize: 13, color: Colors.grey),
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey.shade900, // સંપૂર્ણ ડાર્ક કલર
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
             ],
