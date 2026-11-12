@@ -10,6 +10,7 @@ import 'package:http/http.dart' as http;
 import 'auth_gate.dart';
 import 'export_service.dart';
 import 'security_service.dart'; // બાયોમેટ્રિક સુરક્ષા માટે
+typedef DataMap = Map<dynamic, dynamic>;
 
 final ValueNotifier<Color> appSeedColor = ValueNotifier<Color>(Colors.teal);
 final ValueNotifier<String?> appBackgroundImage = ValueNotifier<String?>(null);
@@ -367,10 +368,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  List> get categories =>
+  List<DataMap> get categories =>
       categoriesBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
 
-  List> get accounts =>
+  List<DataMap> get accounts =>
       accountsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
 
   void _processAutoPayAndSIP() {
@@ -425,7 +426,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  List> get pendingManualReminders {
+  List<DataMap> get pendingManualReminders {
     final now = DateTime.now();
     final currentMonthKey = "${now.year}-${now.month}";
     final allAuto =
@@ -507,7 +508,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // 1. ડેટા ફિલ્ટરિંગ અને ગણતરી (Data & Calculations)
   // ==========================================
 
-  List> get filteredTransactions {
+  List<DataMap> get filteredTransactions {
     final now = DateTime.now();
     final fyStart = DateTime(selectedFinancialYearStart, 4, 1);
     final fyEnd = DateTime(selectedFinancialYearStart + 1, 3, 31, 23, 59, 59);
