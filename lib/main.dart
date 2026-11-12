@@ -367,10 +367,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  List> get categories =>
+  List<String> get categories =>
       categoriesBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
 
-  List> get accounts =>
+  List<String> get accounts =>
       accountsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
 
   void _processAutoPayAndSIP() {
@@ -425,7 +425,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  List> get pendingManualReminders {
+  List<String> get pendingManualReminders {
     final now = DateTime.now();
     final currentMonthKey = "${now.year}-${now.month}";
     final allAuto =
@@ -507,7 +507,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // 1. ડેટા ફિલ્ટરિંગ અને ગણતરી (Data & Calculations)
   // ==========================================
 
-  List> get filteredTransactions {
+  List<String> get filteredTransactions {
     final now = DateTime.now();
     final fyStart = DateTime(selectedFinancialYearStart, 4, 1);
     final fyEnd = DateTime(selectedFinancialYearStart + 1, 3, 31, 23, 59, 59);
@@ -2541,7 +2541,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       'સેલેરી એકાઉન્ટ (Salary A/C)',
       'કરન્ટ એકાઉન્ટ (Current A/C)',
       'રોકડ (Cash Wallet)',
-      'મ્યુચ્યુઅલ ફંડ પોર્ટફોલિયો
+      'મ્યુચ્યુઅલ ફંડ પોર્ટફોલિય',
 'ડીમેટ / ટ્રેડિંગ એકાઉન્ટ (Demat A/C)',
       'ક્રેડિટ કાર્ડ (Credit Card)',
       'અન્ય ખાતું (Other)',
@@ -2737,7 +2737,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   value: selectedFinancialYearStart,
                   underline: const SizedBox(),
                   items: List.generate(5, (index) {
-                    int yr = DateTime.now().year - 2 + index;
+                    int yr = (DateTime.now().year - 2 + index).toInt();
                     return DropdownMenuItem(
                       value: yr,
                       child: Text('FY $yr-${(yr + 1).toString().substring(2)}',
