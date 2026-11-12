@@ -42,12 +42,27 @@ class _AuthGateState extends State<AuthGate> {
         _isFirstTime = !hasPwd;
         _isLoading = false;
       });
+
+      // જો પાસવર્ડ સેટ હોય અને સેટિંગ્સમાં બાયોમેટ્રિક ચાલુ હોય તો સીધો ફિંગરપ્રિન્ટ વિકલ્પ આપવો
+      if (hasPwd && SecurityService.isBiometricEnabledInSettings()) {
+        final hasBio = await SecurityService.isBiometricAvailable();
+        if (hasBio && mounted) {
+          _unlockWithBiometric(lastEmail);
+        }
+      }
     } else {
       if (!mounted) return;
       setState(() {
         _isFirstTime = true;
         _isLoading = false;
       });
+    }
+  }
+
+  Future<void> _unlockWithBiometric(String email) async {
+    final success = await SecurityService.authenticateWithBiometrics(forceCheck: true);
+    if (success && mounted) {
+      await _openUserDatabaseAndNavigate(email);
     }
   }
 
@@ -67,7 +82,6 @@ class _AuthGateState extends State<AuthGate> {
     final email = _emailController.text.trim().toLowerCase();
     final pwd = _passwordController.text.trim();
 
-    // સુધારેલ ઈમેઈલ અને પાસવર્ડ વેલિડેશન
     if (!email.contains('@') || !email.contains('.')) {
       setState(() => _errorMessage = 'માન્ય ઈમેઈલ એડ્રેસ દાખલ કરો.');
       return;
@@ -221,11 +235,13 @@ class _AuthGateState extends State<AuthGate> {
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
-        builder: (_) => DashboardScreen(
-          userEmail: email,
-          catBoxName: catBoxName,
-          accBoxName: accBoxName,
-          txBoxName: txBoxName,
+        builder: (_) => AutoLockWrapper(
+          child: DashboardScreen(
+            userEmail: email,
+            catBoxName: catBoxName,
+            accBoxName: accBoxName,
+            txBoxName: txBoxName,
+          ),
         ),
       ),
     );
@@ -240,7 +256,7 @@ class _AuthGateState extends State<AuthGate> {
     }
 
     return Scaffold(
-      backgroundColor: Colors.grey.shade100, // આછું બેકગ્રાઉન્ડ
+      backgroundColor: Colors.grey.shade100,
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.symmetric(horizontal: 24.0),
@@ -249,20 +265,16 @@ class _AuthGateState extends State<AuthGate> {
             children: [
               const Icon(Icons.lock_person_outlined, size: 75, color: Colors.teal),
               const SizedBox(height: 14),
-
-              // ૧. મુખ્ય શીર્ષક - હંમેશા ઘાટું અને સ્પષ્ટ
               Text(
                 _isFirstTime ? 'નવું સુરક્ષિત એકાઉન્ટ બનાવો' : 'નાણાકીય વૉલ્ટ અનલૉક કરો',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   fontSize: 22,
                   fontWeight: FontWeight.bold,
-                  color: Colors.black87, // કાળો રંગ જેથી ૧૦૦% સ્પષ્ટ દેખાય
+                  color: Colors.black87,
                 ),
               ),
               const SizedBox(height: 8),
-
-              // ૨. સબટાઇટલ - ડાર્ક ગ્રે કલર
               Text(
                 _isFirstTime
                     ? 'તમારો ડેટા તમારા મોબાઇલ ડિવાઇસ અને AES-256 થી લોક રહેશે'
@@ -271,12 +283,10 @@ class _AuthGateState extends State<AuthGate> {
                 style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w500,
-                  color: Colors.grey.shade800, // ઘાટો ગ્રે જેથી બેકગ્રાઉન્ડ સાથે ભળી ન જાય
+                  color: Colors.grey.shade800,
                 ),
               ),
               const SizedBox(height: 26),
-
-              // ૩. ઈમેઈલ ઇનપુટ ફિલ્ડ
               TextField(
                 controller: _emailController,
                 keyboardType: TextInputType.emailAddress,
@@ -300,8 +310,6 @@ class _AuthGateState extends State<AuthGate> {
                 ),
               ),
               const SizedBox(height: 16),
-
-              // ૪. પાસવર્ડ ઇનપુટ ફિલ્ડ
               TextField(
                 controller: _passwordController,
                 obscureText: _obscurePassword,
@@ -323,7 +331,7 @@ class _AuthGateState extends State<AuthGate> {
                   errorText: _errorMessage.isEmpty ? null : _errorMessage,
                   errorMaxLines: 2,
                   errorStyle: TextStyle(
-                    color: Colors.red.shade800, // ડાર્ક લાલ કલર
+                    color: Colors.red.shade800,
                     fontWeight: FontWeight.bold,
                     fontSize: 12.5,
                   ),
@@ -340,8 +348,6 @@ class _AuthGateState extends State<AuthGate> {
                 onSubmitted: (_) => _authenticate(),
               ),
               const SizedBox(height: 22),
-
-              // ૫. અનલૉક / સેવ બટન
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
@@ -360,9 +366,38 @@ class _AuthGateState extends State<AuthGate> {
                   ),
                 ),
               ),
-              const SizedBox(height: 18),
 
-              // ૬. પાસવર્ડ ભૂલી ગયા છો લિંક
+              // ફિંગરપ્રિન્ટ વડે અનલૉક કરવાનું બટન (જો ઉપલબ્ધ અને સક્રિય હોય તો જ દેખાશે)
+              if (!_isFirstTime)
+                FutureBuilder<bool>(
+                  future: SecurityService.isBiometricAvailable(),
+                  builder: (context, snapshot) {
+                    if (snapshot.data == true && SecurityService.isBiometricEnabledInSettings()) {
+                      return Padding(
+                        padding: const EdgeInsets.only(top: 12.0),
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            minimumSize: const Size.fromHeight(48),
+                            side: const BorderSide(color: Colors.teal, width: 1.5),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          icon: const Icon(Icons.fingerprint, color: Colors.teal, size: 24),
+                          label: const Text(
+                            'ફિંગરપ્રિન્ટ / બાયોમેટ્રિક વડે અનલૉક કરો',
+                            style: TextStyle(color: Colors.teal, fontWeight: FontWeight.bold),
+                          ),
+                          onPressed: () {
+                            final email = _emailController.text.trim().toLowerCase();
+                            if (email.isNotEmpty) _unlockWithBiometric(email);
+                          },
+                        ),
+                      );
+                    }
+                    return const SizedBox.shrink();
+                  },
+                ),
+
+              const SizedBox(height: 16),
               if (!_isFirstTime)
                 TextButton.icon(
                   onPressed: _sendResetPasswordLink,
@@ -376,8 +411,6 @@ class _AuthGateState extends State<AuthGate> {
                     ),
                   ),
                 ),
-
-              // ૭. મોડ સ્વિચ બટન
               TextButton(
                 onPressed: () {
                   setState(() {
@@ -391,10 +424,118 @@ class _AuthGateState extends State<AuthGate> {
                       : 'નવું એકાઉન્ટ બનાવવું છે? અહીં ક્લિક કરો',
                   style: TextStyle(
                     fontSize: 14,
-                    color: Colors.grey.shade900, // સંપૂર્ણ ડાર્ક કલર
+                    color: Colors.grey.shade900,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// =========================================================================
+// એપ બેકગ્રાઉન્ડમાં જાય ત્યારે સમય આધારિત ઓટો-લૉક કરનાર સુરક્ષા કવચ (Wrapper)
+// =========================================================================
+class AutoLockWrapper extends StatefulWidget {
+  final Widget child;
+  const AutoLockWrapper({super.key, required this.child});
+
+  @override
+  State<AutoLockWrapper> createState() => _AutoLockWrapperState();
+}
+
+class _AutoLockWrapperState extends State<AutoLockWrapper> with WidgetsBindingObserver {
+  bool _isLocked = false;
+  bool _isAuthenticating = false;
+  DateTime? _pausedTime;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!SecurityService.isBiometricEnabledInSettings()) return;
+
+    final int timeoutSeconds = SecurityService.getAutoLockTimeoutSeconds();
+    if (timeoutSeconds == -1) return; // 'ક્યારેય નહીં' પસંદ કરેલ હોય તો
+
+    if (state == AppLifecycleState.paused) {
+      _pausedTime = DateTime.now();
+    } else if (state == AppLifecycleState.resumed) {
+      if (_pausedTime != null) {
+        final elapsed = DateTime.now().difference(_pausedTime!).inSeconds;
+        if (elapsed >= timeoutSeconds) {
+          if (mounted) {
+            setState(() => _isLocked = true);
+            _triggerUnlock();
+          }
+        }
+        _pausedTime = null;
+      }
+    }
+  }
+
+  Future<void> _triggerUnlock() async {
+    if (_isAuthenticating) return;
+    _isAuthenticating = true;
+
+    final success = await SecurityService.authenticateWithBiometrics(forceCheck: true);
+    if (mounted) {
+      setState(() {
+        _isLocked = !success;
+        _isAuthenticating = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_isLocked) return widget.child;
+
+    return Scaffold(
+      backgroundColor: Colors.grey.shade100,
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(28.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.shield_outlined, size: 75, color: Colors.teal),
+              const SizedBox(height: 20),
+              const Text(
+                'નાણાકીય વૉલ્ટ લૉક થયેલ છે',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black87),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'સુરક્ષા ખાતર એપ લૉક કરવામાં આવી છે. આગળ વધવા માટે ફિંગરપ્રિન્ટ અથવા સ્ક્રીન લૉક દાખલ કરો.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 13, color: Colors.grey.shade800),
+              ),
+              const SizedBox(height: 28),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.teal,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                icon: const Icon(Icons.fingerprint),
+                label: const Text('અનલૉક કરો', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                onPressed: _triggerUnlock,
               ),
             ],
           ),
