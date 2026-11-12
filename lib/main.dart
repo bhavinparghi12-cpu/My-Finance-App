@@ -367,10 +367,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  List<String> get categories =>
+  List> get categories =>
       categoriesBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
 
-  List<String> get accounts =>
+  List> get accounts =>
       accountsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
 
   void _processAutoPayAndSIP() {
@@ -396,7 +396,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             "auto_${DateTime.now().millisecondsSinceEpoch}_${item['id']}";
         final fromAcc = accounts.firstWhere(
             (a) => a['id'].toString() == fromAccId,
-            orElse: () => {'name': 'બેંક'});
+            orElse: () => <dynamic, dynamic>{'name': 'બેંક'});
         String catEffect = type == 'SIP'
             ? 'assetIncrease'
             : (type == 'EMI' ? 'loanRepay' : 'expenseDebit');
@@ -425,7 +425,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  List<String> get pendingManualReminders {
+  List> get pendingManualReminders {
     final now = DateTime.now();
     final currentMonthKey = "${now.year}-${now.month}";
     final allAuto =
@@ -449,7 +449,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final toTarget = item['toTarget'] ?? '';
     final txId = "manual_rem_${DateTime.now().millisecondsSinceEpoch}";
     final fromAcc = accounts.firstWhere((a) => a['id'].toString() == fromAccId,
-        orElse: () => {'name': 'ખાતું'});
+        orElse: () => <dynamic, dynamic>{'name': 'ખાતું'});
 
     String catEffect = type == 'SIP'
         ? 'assetIncrease'
@@ -483,7 +483,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   double getAccountCurrentBalance(String accountId) {
     final acc = accounts.firstWhere((a) => a['id'].toString() == accountId,
-        orElse: () => {});
+        orElse: () => <dynamic, dynamic>{});
     double balance = (acc['openingBalance'] as num?)?.toDouble() ?? 0.0;
 
     final allTx = transactionsBox.values
@@ -507,7 +507,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // 1. ડેટા ફિલ્ટરિંગ અને ગણતરી (Data & Calculations)
   // ==========================================
 
-  List<String> get filteredTransactions {
+  List> get filteredTransactions {
     final now = DateTime.now();
     final fyStart = DateTime(selectedFinancialYearStart, 4, 1);
     final fyEnd = DateTime(selectedFinancialYearStart + 1, 3, 31, 23, 59, 59);
@@ -558,7 +558,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         .where((t) => t['categoryEffect'] == effect)
         .fold(0.0, (sum, item) {
       final amt = item['amount'];
-      if (amt is num) return sum + amt.toDouble();
+          if (amt is num) return sum + amt.toDouble();
       return sum + (double.tryParse(amt?.toString() ?? '0') ?? 0.0);
     });
   }
