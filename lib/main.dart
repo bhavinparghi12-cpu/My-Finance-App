@@ -511,10 +511,10 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     }
   }
 
-  List> get categories =>
+  List<DataMap> get categories =>
       categoriesBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
 
-  List> get accounts =>
+  List<DataMap> get accounts =>
       accountsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
 
   void _processAutoPayAndSIP() {
@@ -562,7 +562,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     }
   }
 
-  List> get pendingManualReminders {
+  List<DataMap> get pendingManualReminders {
     final now = DateTime.now();
     final currentMonthKey = "${now.year}-${now.month}";
     final allAuto = autoPayBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
@@ -633,7 +633,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   }
 
   // સમગ્ર નાણાકીય વર્ષ (FY) ના તમામ વ્યવહારો (વાર્ષિક ટેક્સ અને ખર્ચ ગણતરી માટે)
-  List> get entireFYTransactions {
+  List<DataMap> get entireFYTransactions {
     final fyStart = DateTime(selectedFinancialYearStart, 4, 1);
     final fyEnd = DateTime(selectedFinancialYearStart + 1, 3, 31, 23, 59, 59);
     final allTx = transactionsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
@@ -644,7 +644,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     }).toList();
   }
 
-  List> get filteredTransactions {
+  List<DataMap> get filteredTransactions {
     final now = DateTime.now();
     final fyStart = DateTime(selectedFinancialYearStart, 4, 1);
     final fyEnd = DateTime(selectedFinancialYearStart + 1, 3, 31, 23, 59, 59);
