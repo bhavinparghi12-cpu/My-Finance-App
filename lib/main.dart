@@ -3534,7 +3534,7 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
   String marketSignal = "તપાસ ચાલુ...";
   Color signalColor = Colors.grey;
 
-  List> verifiedHoldings = [];
+  List<HoldingMap> verifiedHoldings = [];
 
   @override
   void initState() {
@@ -3572,7 +3572,7 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
         }
       }
 
-      List> onlinePortfolio = await _fetchVerifiedHoldings(schemeCode, fetchedName);
+      List<HoldingMap> onlinePortfolio = await _fetchVerifiedHoldings(schemeCode, fetchedName);
 
       double totalWeightedImpact = 0.0;
       for (var item in onlinePortfolio) {
@@ -3624,7 +3624,7 @@ class _DynamicMutualFundAnalyzerState extends State<DynamicMutualFundAnalyzer> {
     }
   }
 
-  Future<List>> _fetchVerifiedHoldings(int code, String fundName) async {
+  Future<List<HoldingMap>> _fetchVerifiedHoldings(int code, String fundName) async {
     await Future.delayed(const Duration(milliseconds: 600));
 
     final name = fundName.toLowerCase();
