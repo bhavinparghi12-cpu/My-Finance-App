@@ -13,6 +13,7 @@ import 'package:http/http.dart' as http;
 import 'auth_gate.dart';
 import 'export_service.dart';
 import 'security_service.dart';
+typedef HoldingMap = Map<String, dynamic>;
 
 typedef DataMap = Map<dynamic, dynamic>;
 
