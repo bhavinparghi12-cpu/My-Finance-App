@@ -694,7 +694,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             borderRadius: BorderRadius.circular(14),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.05),
+                color: Colors.black.withValues(alpha: 0.05),
                 blurRadius: 6,
                 offset: const Offset(0, 2),
               ),
@@ -811,9 +811,9 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
       decoration: BoxDecoration(
-        color: isDark ? textColor.withOpacity(0.18) : bgColor,
+        color: isDark ? textColor.withValues(alpha: 0.18) : bgColor,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: isDark ? textColor.withOpacity(0.5) : borderColor, width: 1.2),
+        border: Border.all(color: isDark ? textColor.withValues(alpha: 0.5) : borderColor, width: 1.2),
       ),
       child: Column(
         children: [
@@ -913,7 +913,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                 margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                 child: ListTile(
                   leading: CircleAvatar(
-                    backgroundColor: Color(tx['categoryColor'] ?? Colors.teal.toARGB32()).withOpacity(0.18),
+                    backgroundColor: Color(tx['categoryColor'] ?? Colors.teal.toARGB32()).withValues(alpha: 0.18),
                     child: Icon(
                       isIncome ? Icons.add_circle : (isInvest ? Icons.savings : Icons.remove_circle),
                       color: Color(tx['categoryColor'] ?? Colors.teal.toARGB32()),
@@ -1415,7 +1415,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                 Container(
                   padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
-                    color: Colors.teal.withOpacity(0.08),
+                    color: Colors.teal.withValues(alpha: 0.08),
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Row(
@@ -3463,7 +3463,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   image: DecorationImage(
                     image: FileImage(File(bgImagePath)),
                     fit: BoxFit.cover,
-                    colorFilter: ColorFilter.mode(Colors.black.withOpacity(0.25), BlendMode.darken),
+                    colorFilter: ColorFilter.mode(Colors.black.withValues(alpha: 0.25), BlendMode.darken),
                   ),
                 )
               : null,
