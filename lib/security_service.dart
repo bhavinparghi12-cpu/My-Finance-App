@@ -1,8 +1,9 @@
 import 'dart:convert';
 import 'dart:math';
 import 'package:crypto/crypto.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:hive/hive.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'package:local_auth/local_auth.dart';
 
 class SecurityService {
@@ -10,6 +11,10 @@ class SecurityService {
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
   );
   static final LocalAuthentication _auth = LocalAuthentication();
+
+  // ફિંગરપ્રિન્ટ ડાયલોગ એકસાથે બે વાર ટ્રિગર થતો અટકાવવા માટેના ગાર્ડ્સ
+  static bool _isBusy = false;
+  static DateTime? _lastSuccessTime;
 
   static String _getUserPrefix(String email) {
     final bytes = utf8.encode(email.trim().toLowerCase());
@@ -22,13 +27,16 @@ class SecurityService {
     return base64UrlEncode(values);
   }
 
-  // નોંધાયેલ છેલ્લો ઈમેઇલ
+  // નોંધાયેલ છેલ્લો ઈમેઇલ મેળવવો
   static Future<String?> getLastActiveEmail() async {
     return await _storage.read(key: 'last_active_email');
   }
 
   static Future<void> setLastActiveEmail(String email) async {
-    await _storage.write(key: 'last_active_email', value: email.trim().toLowerCase());
+    await _storage.write(
+      key: 'last_active_email',
+      value: email.trim().toLowerCase(),
+    );
   }
 
   static Future<bool> isPasswordSetForEmail(String email) async {
@@ -108,32 +116,37 @@ class SecurityService {
   }
 
   // =========================================================================
-  // નવા ઉમેરેલા બાયોમેટ્રિક (ફિંગરપ્રિન્ટ / PIN) અને ઓટો-લૉક સુરક્ષા ફંક્શન્સ
+  // સુધારેલા બાયોમેટ્રિક (ફિંગરપ્રિન્ટ / PIN) અને ઓટો-લૉક સુરક્ષા ફંક્શન્સ
   // =========================================================================
 
-  // ૧. મોબાઇલમાં ફિંગરપ્રિન્ટ / બાયોમેટ્રિક હાર્ડવેર ઉપલબ્ધ છે કે નહીં તે તપાસવું
+  static Future<Box> _getSettingsBox() async {
+    if (!Hive.isBoxOpen('settingsBox')) {
+      return await Hive.openBox('settingsBox');
+    }
+    return Hive.box('settingsBox');
+  }
+
+  // ૧. મોબાઇલમાં ફિંગરપ્રિન્ટ અથવા ડિવાઇસ સ્ક્રીન લૉક ઉપલબ્ધ છે કે નહીં તે તપાસવું
   static Future<bool> isBiometricAvailable() async {
     try {
       final bool canCheck = await _auth.canCheckBiometrics;
       final bool isSupported = await _auth.isDeviceSupported();
-      final List<BiometricType> availableBiometrics = await _auth.getAvailableBiometrics();
-      
-      return (canCheck || isSupported) && availableBiometrics.isNotEmpty;
-    } catch (e) {
+      return canCheck || isSupported;
+    } catch (_) {
       return false;
     }
   }
 
-  // ૨. સેટિંગ્સમાંથી બાયોમેટ્રિક સુરક્ષા ચાલુ (Enable) છે કે બંધ (Disable) તે વાંચવું
+  // ૨. સેટિંગ્સમાંથી બાયોમેટ્રિક સુરક્ષા ચાલુ છે કે બંધ તે વાંચવું
   static bool isBiometricEnabledInSettings() {
     if (!Hive.isBoxOpen('settingsBox')) return false;
     final settingsBox = Hive.box('settingsBox');
-    return settingsBox.get('biometricEnabled', defaultValue: true);
+    return settingsBox.get('biometricEnabled', defaultValue: true) == true;
   }
 
   // ૩. સેટિંગ્સમાં બાયોમેટ્રિક સુરક્ષા ચાલુ કે બંધ સેવ કરવી
   static Future<void> setBiometricEnabled(bool isEnabled) async {
-    final settingsBox = Hive.box('settingsBox');
+    final settingsBox = await _getSettingsBox();
     await settingsBox.put('biometricEnabled', isEnabled);
   }
 
@@ -141,35 +154,62 @@ class SecurityService {
   static int getAutoLockTimeoutSeconds() {
     if (!Hive.isBoxOpen('settingsBox')) return 30;
     final settingsBox = Hive.box('settingsBox');
-    return settingsBox.get('autoLockSeconds', defaultValue: 30);
+    final dynamic val = settingsBox.get(
+      'autoLockSeconds',
+      defaultValue: settingsBox.get('autoLockTimeout', defaultValue: 30),
+    );
+    return (val as num?)?.toInt() ?? 30;
   }
 
   // ૫. ઓટો-લૉક સમયગાળો સેટિંગ્સમાં સેવ કરવો
   static Future<void> setAutoLockTimeoutSeconds(int seconds) async {
-    final settingsBox = Hive.box('settingsBox');
+    final settingsBox = await _getSettingsBox();
     await settingsBox.put('autoLockSeconds', seconds);
+    await settingsBox.put('autoLockTimeout', seconds);
   }
 
   // ૬. બાયોમેટ્રિક / ફોન સ્ક્રીન લૉક વડે યુઝરને પ્રમાણિત કરવા (Authenticate)
   static Future<bool> authenticateWithBiometrics({bool forceCheck = false}) async {
-    // જો સેટિંગ્સમાં બંધ હોય અને ફરજિયાત ચેક (જેમ કે ચાલુ કરતી વખતે વેરિફિકેશન) ન હોય તો સીધો પ્રવેશ આપવો
     if (!forceCheck && !isBiometricEnabledInSettings()) {
       return true;
     }
 
+    // જો છેલ્લા 3 સેકન્ડમાં જ સફળતાપૂર્વક અનલોક થયું હોય તો ફરીથી ડાયલોગ ન બતાવવો
+    if (!forceCheck &&
+        _lastSuccessTime != null &&
+        DateTime.now().difference(_lastSuccessTime!).inSeconds < 3) {
+      return true;
+    }
+
+    // જો પહેલેથી જ ફિંગરપ્રિન્ટ ડાયલોગ ચાલુ હોય તો ડુપ્લિકેટ કોલ અટકાવવો
+    if (_isBusy) return false;
+
+    _isBusy = true;
     try {
       final bool hasHardware = await isBiometricAvailable();
-      if (!hasHardware) return true; // જો ફોનમાં ફિંગરપ્રિન્ટ હાર્ડવેર ન હોય તો અટકાવવું નહીં
+      if (!hasHardware) {
+        return true;
+      }
 
-      return await _auth.authenticate(
+      final bool didAuthenticate = await _auth.authenticate(
         localizedReason: 'નાણાકીય હિસાબો સુરક્ષિત રાખવા માટે ફિંગરપ્રિન્ટ અથવા સ્ક્રીન લૉક દાખલ કરો',
         options: const AuthenticationOptions(
           stickyAuth: true,
           biometricOnly: false, // ફિંગરપ્રિન્ટ ઉપરાંત ફોનનો PIN/Pattern પણ સ્વીકારશે
+          useErrorDialogs: true,
         ),
       );
-    } catch (e) {
+
+      if (didAuthenticate) {
+        _lastSuccessTime = DateTime.now();
+      }
+      return didAuthenticate;
+    } on PlatformException catch (_) {
       return false;
+    } catch (_) {
+      return false;
+    } finally {
+      _isBusy = false;
     }
   }
 }
