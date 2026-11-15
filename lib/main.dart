@@ -1632,7 +1632,17 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           maxY: maxVal > 0 ? maxVal * 1.25 : 1000,
           barGroups: [
             BarChartGroupData(x: 0, barRods: [BarChartRodData(toY: inc, color: Colors.green, width: 22, borderRadius: BorderRadius.circular(4))]),
-            BarChartGroupData(x: 1, barRods: [BarChartRodData(toY: exp, color: Colors.redAccent, width: 22, borderRadius.circular(4))]),
+            BarChartGroupData(
+ x: 1,
+  barRods: [
+    BarChartRodData(
+      toY: exp,
+      color: Colors.redAccent,
+      width: 22,
+      borderRadius: BorderRadius.circular(4),
+    ),
+  ],
+),
             BarChartGroupData(x: 2, barRods: [BarChartRodData(toY: inv, color: Colors.blue, width: 22, borderRadius: BorderRadius.circular(4))]),
           ],
           titlesData: FlTitlesData(
