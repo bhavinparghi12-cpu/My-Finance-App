@@ -1,5 +1,6 @@
-package com.example.my_finance_app
+package com.example.my_finance_app // અહીં તમારું પોતાનું package નામ રાખવું
 
-import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterFragmentActivity
 
-class MainActivity : FlutterActivity()
+class MainActivity: FlutterFragmentActivity() {
+}
