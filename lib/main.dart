@@ -1200,6 +1200,42 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
         });
   }
 
+  // =========================================================
+  // (નવું) ફોટો ૪ (New Regime FY 2026-27) અને ફોટો ૫ (Old Regime) મુજબ ટેક્સ ગણતરી
+  // તથા આખી એપમાંથી આવક, રોકાણ, બચત, રિસ્ક અને સ્ટ્રેટેજી ફેચિંગ એન્જિન
+  // =========================================================
+  String _classifyMfSubCategory(Map<dynamic, dynamic> mf) {
+    final savedCat = (mf['mfSubCategory'] ?? '').toString().trim();
+    if (savedCat.isNotEmpty) return savedCat;
+    final name = (mf['schemeName'] ?? '').toString().toLowerCase();
+    if (name.contains('elss') || name.contains('tax') || name.contains('ટેક્સ')) {
+      return 'ELSS';
+    }
+    if (name.contains('liquid') ||
+        name.contains('debt') ||
+        name.contains('bond') ||
+        name.contains('gilt') ||
+        name.contains('overnight') ||
+        name.contains('money market') ||
+        name.contains('corporate') ||
+        name.contains('short') ||
+        name.contains('ડેબ્ટ')) {
+      return 'Debt';
+    }
+    if (name.contains('hybrid') ||
+        name.contains('balanced') ||
+        name.contains('arbitrage') ||
+        name.contains('multi asset') ||
+        name.contains('dynamic') ||
+        name.contains('હાઇબ્રીડ')) {
+      return 'Hybrid';
+    }
+    return 'Equity';
+  }
+
+  // ફોટો ૪ મુજબ: New Tax Regime Slabs (FY 2026-27)
+  // 0-4L: 0%, 4-8L: 5%, 8-12L: 10%, 12-16L: 15%, 16-20L: 20%, 20-24L: 25%, >24L: 30%
+  // Standard Deduction: ₹75,000 | Section 87A Rebate: Taxable Income <= ₹12,00,000 પર ₹0 ટેક્સ (માર્જિનલ રિલીફ સહિત)
   double _calculateIncomeTaxNewRegime(double taxableIncome) {
     if (taxableIncome <= 1200000) return 0.0;
     double tax = 0.0;
@@ -1221,7 +1257,39 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     if (taxableIncome > 2400000) {
       tax += (taxableIncome - 2400000) * 0.30;
     }
-    return tax * 1.04;
+    // માર્જિનલ રિલીફ: ₹12,00,000 કરતાં વધારાની આવક કરતાં બેઝ ટેક્સ વધુ ન હોવો જોઈએ
+    final double excessOver12L = taxableIncome - 1200000.0;
+    if (tax > excessOver12L) {
+      tax = excessOver12L;
+    }
+    return tax * 1.04; // 4% Health & Education Cess
+  }
+
+  // ફોટો ૫ મુજબ: Old Tax Regime Slabs
+  // સામાન્ય (<60 વર્ષ): ₹2,50,000 સુધી 0% | સિનિયર (60-80 વર્ષ): ₹3,00,000 સુધી 0% | સુપર સિનિયર (80+ વર્ષ): ₹5,00,000 સુધી 0%
+  // ₹5,00,000 સુધી 5% | ₹5,00,001 થી ₹10,00,000: 20% | ₹10,00,000 થી વધુ: 30%
+  // Standard Deduction: ₹50,000 | Section 87A Rebate: કરપાત્ર આવક ₹5,00,000 સુધી ₹0 ટેક્સ
+  double _calculateIncomeTaxOldRegime(double taxableIncome, {String ageGroup = 'regular'}) {
+    if (taxableIncome <= 500000) return 0.0;
+    double basicExemption = 250000.0;
+    if (ageGroup == 'senior') {
+      basicExemption = 300000.0;
+    } else if (ageGroup == 'super_senior') {
+      basicExemption = 500000.0;
+    }
+    if (taxableIncome <= basicExemption) return 0.0;
+
+    double tax = 0.0;
+    if (taxableIncome > basicExemption && basicExemption < 500000.0) {
+      tax += (math.min(taxableIncome, 500000.0) - basicExemption) * 0.05;
+    }
+    if (taxableIncome > 500000.0) {
+      tax += (math.min(taxableIncome, 1000000.0) - 500000.0) * 0.20;
+    }
+    if (taxableIncome > 1000000.0) {
+      tax += (taxableIncome - 1000000.0) * 0.30;
+    }
+    return tax * 1.04; // 4% Health & Education Cess
   }
 
   Map<String, double> _getCapitalGainsSummary({bool entireFY = false}) {
@@ -1286,66 +1354,435 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     };
   }
 
-  Map<String, double> _calculatePortfolioReturnMetrics() {
-    double totalInvested = 0.0;
-    double currentValuation = 0.0;
+  // આખી એપમાંથી (દૈનિક નોંધ, MF, સ્ટોક, FD/બોન્ડ/PLI, ઓટો-પે, બેંક ખાતા) આવક અને ટેક્સ ડિડક્શન ફેચ કરતું ફંક્શન
+  Map<String, double> _fetchComprehensiveTaxData({bool entireFY = true}) {
+    final fyStart = DateTime(selectedFinancialYearStart, 4, 1);
+    final fyEnd = DateTime(selectedFinancialYearStart + 1, 3, 31, 23, 59, 59);
+    final txList = entireFY ? entireFYTransactions : filteredTransactions;
 
-    // 1. Mutual Funds
-    for (final m in mfInvestmentsBox.values) {
-      final inv = (m['investedAmount'] as num?)?.toDouble() ?? 0.0;
-      final units = (m['units'] as num?)?.toDouble() ?? 0.0;
-      final curNav = (m['currentNav'] as num?)?.toDouble() ?? (m['buyNav'] as num?)?.toDouble() ?? 0.0;
-      totalInvested += inv;
-      currentValuation += units > 0 ? (units * curNav) : inv;
+    double regularGrossIncome = 0.0;
+    double recordedBankInterest = 0.0;
+    double raw80C = 0.0;
+    double raw80D = 0.0;
+    double rawHomeOrEduLoan = 0.0;
+
+    // ૧. દૈનિક વ્યવહારોમાંથી આવક અને કરબચત રોકાણો ફેચ કરો (વેચાણની મૂળ રકમ Capital Gains માં ગણાતી હોવાથી બાકાત)
+    for (final tx in txList) {
+      final String id = (tx['id'] ?? '').toString();
+      final String title = (tx['title'] ?? '').toString().toLowerCase();
+      final String catName = (tx['categoryName'] ?? '').toString().toLowerCase();
+      final String effect = (tx['categoryEffect'] ?? '').toString();
+      final double amt = (tx['amount'] as num?)?.toDouble() ?? 0.0;
+
+      final bool isAssetSaleProceeds = id.startsWith('tx_mf_sell_') ||
+          id.startsWith('tx_stk_sell_') ||
+          id.startsWith('tx_sell_bul_') ||
+          id.startsWith('tx_sell_asset_') ||
+          id.startsWith('fi_auto_');
+
+      if (effect == 'incomeCredit' && !isAssetSaleProceeds) {
+        regularGrossIncome += amt;
+        if (title.contains('વ્યાજ') || title.contains('interest') || title.contains('બેંક')) {
+          recordedBankInterest += amt;
+        }
+      }
+
+      // જો મેન્યુઅલ વ્યવહાર હોય તો તેમાંથી 80C / 80D તપાસો
+      final bool isLinkedBoxTx = id.startsWith('tx_mf_') || id.startsWith('tx_stk_') || id.startsWith('tx_fi_') || id.startsWith('tx_bullion_') || id.startsWith('tx_asset_');
+      if (!isLinkedBoxTx) {
+        if (title.contains('pli') ||
+            title.contains('lic') ||
+            title.contains('ppf') ||
+            title.contains('ssy') ||
+            title.contains('elss') ||
+            title.contains('pf') ||
+            title.contains('ટર્મ') ||
+            title.contains('term') ||
+            catName.contains('વીમા')) {
+          if (title.contains('health') || title.contains('હેલ્થ') || title.contains('મેડિકલ')) {
+            raw80D += amt;
+          } else {
+            raw80C += amt;
+          }
+        } else if (title.contains('health') || title.contains('હેલ્થ') || title.contains('મેડિકલ')) {
+          raw80D += amt;
+        } else if (title.contains('home loan') || title.contains('હોમ લોન') || title.contains('education loan') || title.contains('એજ્યુકેશન')) {
+          rawHomeOrEduLoan += amt;
+        }
+      }
     }
 
-    // 2. Stocks & ETFs
+    // ૨. મ્યુચ્યુઅલ ફંડ બોક્સમાંથી ELSS / Tax Saver ફંડ ફેચ કરો
+    for (final m in mfInvestmentsBox.values) {
+      final dt = DateTime.tryParse(m['date'] ?? '') ?? DateTime.now();
+      if (!entireFY || (!dt.isBefore(fyStart) && !dt.isAfter(fyEnd))) {
+        final subCat = _classifyMfSubCategory(Map<dynamic, dynamic>.from(m));
+        final sName = (m['schemeName'] ?? '').toString().toLowerCase();
+        if (subCat == 'ELSS' || sName.contains('elss') || sName.contains('tax') || sName.contains('ટેક્સ')) {
+          raw80C += (m['investedAmount'] as num?)?.toDouble() ?? 0.0;
+        }
+      }
+    }
+
+    // ૩. Fixed Income બોક્સમાંથી PLI, PPF, SSY, 5-Yr FD ફેચ કરો
+    for (final f in fixedIncomeBox.values) {
+      final dt = DateTime.tryParse(f['startDate'] ?? '') ?? DateTime.now();
+      if (!entireFY || (!dt.isBefore(fyStart) && !dt.isAfter(fyEnd))) {
+        final sType = (f['schemeType'] ?? '').toString().toLowerCase();
+        final title = (f['title'] ?? '').toString().toLowerCase();
+        final pAmt = (f['principalAmount'] as num?)?.toDouble() ?? 0.0;
+        if (sType.contains('pli') ||
+            sType.contains('ppf') ||
+            sType.contains('ssy') ||
+            sType.contains('fd') ||
+            title.contains('tax') ||
+            title.contains('pli') ||
+            title.contains('ppf')) {
+          raw80C += pAmt;
+        }
+      }
+    }
+
+    // ૪. AutoPay બોક્સમાંથી સક્રિય PLI, Health Insurance, Term Insurance ફેચ કરો (જો હજુ પ્રોસેસ ન થયા હોય તો પણ વાર્ષિક અંદાજમાં ગણાય)
+    for (final a in autoPayBox.values) {
+      if (a['isActive'] == true) {
+        final aType = (a['type'] ?? '').toString();
+        final amt = (a['amount'] as num?)?.toDouble() ?? 0.0;
+        if (aType == 'HealthInsurance' && raw80D == 0) {
+          raw80D += amt;
+        } else if ((aType == 'PLI' || aType == 'TermInsurance' || aType == 'GovScheme') && raw80C == 0) {
+          raw80C += amt;
+        }
+      }
+    }
+
+    // ૫. બેંક બચત ખાતાનું વ્યાજ
+    double bankSavingsBalance = 0.0;
+    for (final acc in accounts) {
+      final aType = (acc['type'] ?? '').toString().toLowerCase();
+      if (!aType.contains('credit') && !aType.contains('ક્રેડિટ')) {
+        final bal = getAccountCurrentBalance(acc['id'].toString());
+        if (bal > 0) bankSavingsBalance += bal;
+      }
+    }
+    final double bankIntRate = (settingsBox.get('bankInterestRate', defaultValue: 3.5) as num).toDouble();
+    final double estimatedBankInterest = bankSavingsBalance * (bankIntRate / 100.0);
+    final double totalBankInterest = recordedBankInterest > 0 ? recordedBankInterest : estimatedBankInterest;
+
+    // જો દૈનિક નોંધમાં બેંક વ્યાજ અલગથી ન ઉમેર્યું હોય અને વપરાશકર્તાએ ઓટો-બેંક વ્યાજ ચાલુ રાખ્યું હોય
+    final bool includeEstBankIntInTax = settingsBox.get('includeEstBankIntInTax', defaultValue: false) == true;
+    final double effectiveGrossIncome = regularGrossIncome + (includeEstBankIntInTax && recordedBankInterest == 0 ? estimatedBankInterest : 0.0);
+
+    final String ageGroup = settingsBox.get('taxAgeGroup', defaultValue: 'regular').toString();
+    final double extraDeductions = (settingsBox.get('extraOldRegimeDeductions', defaultValue: 0.0) as num).toDouble() + rawHomeOrEduLoan;
+
+    // New Regime ગણતરી (ફોટો ૪ મુજબ)
+    const double stdDedNew = 75000.0;
+    final double taxableNew = math.max(0.0, effectiveGrossIncome - stdDedNew);
+    final double slabTaxNew = _calculateIncomeTaxNewRegime(taxableNew);
+
+    // Old Regime ગણતરી (ફોટો ૫ મુજબ)
+    const double stdDedOld = 50000.0;
+    final double allowed80C = math.min(150000.0, raw80C);
+    final double max80DLimit = ageGroup == 'regular' ? 25000.0 : 50000.0;
+    final double allowed80D = math.min(max80DLimit, raw80D);
+    final double max80TTALimit = ageGroup == 'regular' ? 10000.0 : 50000.0;
+    final double allowed80TTA = math.min(max80TTALimit, totalBankInterest);
+
+    final double totalOldDeductions = stdDedOld + allowed80C + allowed80D + allowed80TTA + extraDeductions;
+    final double taxableOld = math.max(0.0, effectiveGrossIncome - totalOldDeductions);
+    final double slabTaxOld = _calculateIncomeTaxOldRegime(taxableOld, ageGroup: ageGroup);
+
+    // Capital Gains (STCG & LTCG)
+    final cg = _getCapitalGainsSummary(entireFY: entireFY);
+    final double stcg = cg['stcg'] ?? 0.0;
+    final double ltcg = cg['ltcg'] ?? 0.0;
+    final double cgTax = cg['totalCgTax'] ?? 0.0;
+
+    final double totalTaxNew = slabTaxNew + cgTax;
+    final double totalTaxOld = slabTaxOld + cgTax;
+
+    return {
+      'grossIncome': effectiveGrossIncome,
+      'stdDedNew': stdDedNew,
+      'taxableNew': taxableNew,
+      'slabTaxNew': slabTaxNew,
+      'totalTaxNew': totalTaxNew,
+      'stdDedOld': stdDedOld,
+      'raw80C': raw80C,
+      'allowed80C': allowed80C,
+      'raw80D': raw80D,
+      'allowed80D': allowed80D,
+      'allowed80TTA': allowed80TTA,
+      'extraDeductions': extraDeductions,
+      'totalOldDeductions': totalOldDeductions,
+      'taxableOld': taxableOld,
+      'slabTaxOld': slabTaxOld,
+      'totalTaxOld': totalTaxOld,
+      'stcg': stcg,
+      'ltcg': ltcg,
+      'cgTax': cgTax,
+      'bankSavingsBalance': bankSavingsBalance,
+      'totalBankInterest': totalBankInterest,
+    };
+  }
+
+  // આખી એપમાંથી સંપૂર્ણ રોકાણ અને બચતનું વર્ગીકરણ (Equity, MF [Equity/Debt/Hybrid/ELSS], FD, Bond, PLI, Bullion, Bank Interest)
+  Map<String, dynamic> _fetchCompletePortfolioBreakdown() {
+    double directStocksVal = 0.0;
+    double directEtfVal = 0.0;
+    double directEquityInv = 0.0;
+
+    // 1. Stocks & ETFs
     for (final s in stockInvestmentsBox.values) {
       final qty = (s['quantity'] as num?)?.toDouble() ?? 0.0;
       final buyP = (s['buyPrice'] as num?)?.toDouble() ?? 0.0;
       final curP = (s['currentPrice'] as num?)?.toDouble() ?? buyP;
-      totalInvested += qty * buyP;
-      currentValuation += qty * curP;
+      final val = qty * curP;
+      directEquityInv += qty * buyP;
+      if ((s['instrumentType'] ?? '').toString().toUpperCase().contains('ETF')) {
+        directEtfVal += val;
+      } else {
+        directStocksVal += val;
+      }
     }
 
-    // 3. Bullion (Gold 24K, Gold 22K, Silver)
+    // 2. Mutual Funds (Equity, Debt, Hybrid, ELSS)
+    double mfEquityVal = 0.0;
+    double mfDebtVal = 0.0;
+    double mfHybridVal = 0.0;
+    double mfElssVal = 0.0;
+    double mfTotalInv = 0.0;
+
+    for (final raw in mfInvestmentsBox.values) {
+      final m = Map<dynamic, dynamic>.from(raw);
+      final inv = (m['investedAmount'] as num?)?.toDouble() ?? 0.0;
+      final units = (m['units'] as num?)?.toDouble() ?? 0.0;
+      final curNav = (m['currentNav'] as num?)?.toDouble() ?? (m['buyNav'] as num?)?.toDouble() ?? 0.0;
+      final val = units > 0 ? (units * curNav) : inv;
+      mfTotalInv += inv;
+
+      final subCat = _classifyMfSubCategory(m);
+      if (subCat == 'Debt') {
+        mfDebtVal += val;
+      } else if (subCat == 'Hybrid') {
+        mfHybridVal += val;
+      } else if (subCat == 'ELSS') {
+        mfElssVal += val;
+      } else {
+        mfEquityVal += val;
+      }
+    }
+
+    // 3. Fixed Income (FD, Bond, PLI, PPF/SSY/RD)
+    double fdVal = 0.0;
+    double bondVal = 0.0;
+    double pliVal = 0.0;
+    double ppfPostOfficeVal = 0.0;
+    double fixedIncomeInv = 0.0;
+
+    for (final f in fixedIncomeBox.values) {
+      final p = (f['principalAmount'] as num?)?.toDouble() ?? 0.0;
+      final mat = (f['scheduledAmount'] as num?)?.toDouble() ?? p;
+      final val = mat > p ? mat : p;
+      fixedIncomeInv += p;
+      final sType = (f['schemeType'] ?? '').toString().toLowerCase();
+      if (sType.contains('fd') || sType.contains('ફિક્સ')) {
+        fdVal += val;
+      } else if (sType.contains('bond') || sType.contains('બોન્ડ')) {
+        bondVal += val;
+      } else if (sType.contains('pli') || sType.contains('lic') || sType.contains('ઇન્સ્યોરન્સ')) {
+        pliVal += val;
+      } else {
+        ppfPostOfficeVal += val;
+      }
+    }
+
+    // 4. Bullion (Gold 24K, Gold 22K, Silver)
     final rates = bullionCityRates[selectedCity] ?? {"gold24": 96500.0, "gold22": 88400.0, "silver": 112000.0};
+    double gold24Val = 0.0;
+    double gold22Val = 0.0;
+    double silverVal = 0.0;
+    double bullionInv = 0.0;
+
     for (final b in bullionInvestmentsBox.values) {
       final weight = (b['weight'] as num?)?.toDouble() ?? 0.0;
       final buyP = (b['buyPrice'] as num?)?.toDouble() ?? 0.0;
       final mType = (b['metalType'] ?? '').toString();
-      double liveRatePerGram = rates['gold24']! / 10.0;
+      bullionInv += buyP;
       if (mType.contains('22K')) {
-        liveRatePerGram = rates['gold22']! / 10.0;
+        gold22Val += weight * (rates['gold22']! / 10.0);
       } else if (mType.contains('Silver') || mType.contains('ચાંદી')) {
-        liveRatePerGram = rates['silver']! / 1000.0;
+        silverVal += weight * (rates['silver']! / 1000.0);
+      } else {
+        gold24Val += weight * (rates['gold24']! / 10.0);
       }
-      totalInvested += buyP;
-      currentValuation += weight * liveRatePerGram;
-    }
-
-    // 4. Bonds / FD / PLI
-    for (final f in fixedIncomeBox.values) {
-      final p = (f['principalAmount'] as num?)?.toDouble() ?? 0.0;
-      final mat = (f['scheduledAmount'] as num?)?.toDouble() ?? p;
-      totalInvested += p;
-      currentValuation += mat > p ? mat : p * 1.07;
     }
 
     // 5. Physical Assets
+    double physicalAssetsVal = 0.0;
+    double physicalAssetsInv = 0.0;
     for (final a in physicalAssetsBox.values) {
       final v = (a['value'] as num?)?.toDouble() ?? 0.0;
       final curV = (a['currentValue'] as num?)?.toDouble() ?? v;
-      totalInvested += v;
-      currentValuation += curV;
+      physicalAssetsInv += v;
+      physicalAssetsVal += curV;
     }
 
-    // Realized gains
+    // 6. દૈનિક વ્યવહારો (transactionsBox) માંથી એવા રોકાણો ફેચ કરો જે સીધા હોમ ટેબ પરથી ઉમેરાયા હોય
+    for (final rawTx in transactionsBox.values) {
+      final tx = Map<dynamic, dynamic>.from(rawTx);
+      final String id = (tx['id'] ?? '').toString();
+      final String effect = (tx['categoryEffect'] ?? '').toString();
+      final String title = (tx['title'] ?? '').toString().toLowerCase();
+      final String catId = (tx['categoryId'] ?? '').toString();
+      final double amt = (tx['amount'] as num?)?.toDouble() ?? 0.0;
+
+      final bool isAlreadyInBoxes = id.startsWith('tx_mf_') ||
+          id.startsWith('tx_stk_') ||
+          id.startsWith('tx_fi_') ||
+          id.startsWith('tx_bullion_') ||
+          id.startsWith('tx_asset_') ||
+          id.startsWith('fi_auto_');
+
+      if (!isAlreadyInBoxes && effect == 'assetIncrease' && amt > 0) {
+        if (title.contains('stock') || title.contains('શેર') || title.contains('etf')) {
+          directStocksVal += amt;
+          directEquityInv += amt;
+        } else if (title.contains('debt') || title.contains('ડેબ્ટ') || title.contains('liquid')) {
+          mfDebtVal += amt;
+          mfTotalInv += amt;
+        } else if (title.contains('hybrid') || title.contains('હાઇબ્રીડ') || title.contains('balanced')) {
+          mfHybridVal += amt;
+          mfTotalInv += amt;
+        } else if (title.contains('elss') || title.contains('tax')) {
+          mfElssVal += amt;
+          mfTotalInv += amt;
+        } else if (title.contains('mf') || title.contains('sip') || title.contains('મ્યુચ્યુઅલ') || catId == '3') {
+          mfEquityVal += amt;
+          mfTotalInv += amt;
+        } else if (title.contains('ચાંદી') || title.contains('silver')) {
+          silverVal += amt;
+          bullionInv += amt;
+        } else if (title.contains('સોનું') || title.contains('gold') || catId == '4') {
+          gold24Val += amt;
+          bullionInv += amt;
+        } else if (title.contains('fd') || title.contains('ફિક્સ')) {
+          fdVal += amt;
+          fixedIncomeInv += amt;
+        } else if (title.contains('bond') || title.contains('બોન્ડ')) {
+          bondVal += amt;
+          fixedIncomeInv += amt;
+        } else if (title.contains('pli') || title.contains('lic') || title.contains('વીમા')) {
+          pliVal += amt;
+          fixedIncomeInv += amt;
+        } else if (title.contains('ppf') || title.contains('ssy') || title.contains('rd') || title.contains('પોસ્ટ')) {
+          ppfPostOfficeVal += amt;
+          fixedIncomeInv += amt;
+        } else {
+          fdVal += amt;
+          fixedIncomeInv += amt;
+        }
+      } else if (!isAlreadyInBoxes && effect == 'expenseDebit' && (title.contains('pli') || title.contains('lic'))) {
+        pliVal += amt;
+        fixedIncomeInv += amt;
+      }
+    }
+
+    // 7. બેંક ખાતાઓની સિલક અને મળતું વ્યાજ
+    double bankSavingsBalance = 0.0;
+    double cashWalletBalance = 0.0;
+    final List<Map<String, dynamic>> bankAccountsBreakdown = [];
+
+    for (final acc in accounts) {
+      final String accId = acc['id'].toString();
+      final String accName = (acc['name'] ?? 'ખાતું').toString();
+      final String accType = (acc['type'] ?? '').toString();
+      if (accType.toLowerCase().contains('credit') || accType.contains('ક્રેડિટ')) continue;
+
+      final double bal = math.max(0.0, getAccountCurrentBalance(accId));
+      final bool isCash = accType.toLowerCase().contains('cash') || accType.contains('રોકડ');
+      if (isCash) {
+        cashWalletBalance += bal;
+      } else {
+        bankSavingsBalance += bal;
+      }
+      bankAccountsBreakdown.add({
+        'name': accName,
+        'type': accType,
+        'balance': bal,
+        'isCash': isCash,
+      });
+    }
+
+    final double bankInterestRate = (settingsBox.get('bankInterestRate', defaultValue: 3.5) as num).toDouble();
+    double recordedBankInterest = 0.0;
+    for (final rawTx in entireFYTransactions) {
+      final tx = Map<dynamic, dynamic>.from(rawTx);
+      final title = (tx['title'] ?? '').toString().toLowerCase();
+      if (tx['categoryEffect'] == 'incomeCredit' && (title.contains('વ્યાજ') || title.contains('interest'))) {
+        recordedBankInterest += (tx['amount'] as num?)?.toDouble() ?? 0.0;
+      }
+    }
+    final double annualEstimatedBankInterest = bankSavingsBalance * (bankInterestRate / 100.0);
+    final double effectiveBankInterest = recordedBankInterest > 0 ? recordedBankInterest : annualEstimatedBankInterest;
+
+    final double directEquityTotal = directStocksVal + directEtfVal;
+    final double mfTotalVal = mfEquityVal + mfDebtVal + mfHybridVal + mfElssVal;
+    final double fixedIncomeTotalVal = fdVal + bondVal + pliVal + ppfPostOfficeVal;
+    final double bullionTotalVal = gold24Val + gold22Val + silverVal;
+    final double totalLiquidSavings = bankSavingsBalance + cashWalletBalance;
+
+    final double totalInvestmentsVal = directEquityTotal + mfTotalVal + fixedIncomeTotalVal + bullionTotalVal + physicalAssetsVal;
+    final double totalInvestedCost = directEquityInv + mfTotalInv + fixedIncomeInv + bullionInv + physicalAssetsInv;
+    final double grandTotalWealth = totalInvestmentsVal + totalLiquidSavings;
+
+    return {
+      'directStocksVal': directStocksVal,
+      'directEtfVal': directEtfVal,
+      'directEquityTotal': directEquityTotal,
+      'mfEquityVal': mfEquityVal,
+      'mfDebtVal': mfDebtVal,
+      'mfHybridVal': mfHybridVal,
+      'mfElssVal': mfElssVal,
+      'mfTotalVal': mfTotalVal,
+      'fdVal': fdVal,
+      'bondVal': bondVal,
+      'pliVal': pliVal,
+      'ppfPostOfficeVal': ppfPostOfficeVal,
+      'fixedIncomeTotalVal': fixedIncomeTotalVal,
+      'gold24Val': gold24Val,
+      'gold22Val': gold22Val,
+      'silverVal': silverVal,
+      'bullionTotalVal': bullionTotalVal,
+      'physicalAssetsVal': physicalAssetsVal,
+      'bankSavingsBalance': bankSavingsBalance,
+      'cashWalletBalance': cashWalletBalance,
+      'totalLiquidSavings': totalLiquidSavings,
+      'bankInterestRate': bankInterestRate,
+      'annualEstimatedBankInterest': annualEstimatedBankInterest,
+      'recordedBankInterest': recordedBankInterest,
+      'effectiveBankInterest': effectiveBankInterest,
+      'bankAccountsBreakdown': bankAccountsBreakdown,
+      'totalInvestmentsVal': totalInvestmentsVal,
+      'totalInvestedCost': totalInvestedCost,
+      'grandTotalWealth': grandTotalWealth,
+    };
+  }
+
+  Map<String, double> _calculatePortfolioReturnMetrics() {
+    final data = _fetchCompletePortfolioBreakdown();
+    final double totalInvested = (data['totalInvestedCost'] as num?)?.toDouble() ?? 0.0;
+    final double currentValuation = (data['totalInvestmentsVal'] as num?)?.toDouble() ?? 0.0;
+    final double bankInterest = (data['effectiveBankInterest'] as num?)?.toDouble() ?? 0.0;
+
     final cg = _getCapitalGainsSummary(entireFY: true);
     final realizedProfit = (cg['stcg'] ?? 0.0) + (cg['ltcg'] ?? 0.0);
 
-    final netProfit = (currentValuation - totalInvested) + realizedProfit;
-    final returnPercent = totalInvested > 0 ? (netProfit / totalInvested) * 100.0 : 0.0;
+    final netProfit = (currentValuation - totalInvested) + realizedProfit + bankInterest;
+    final returnPercent = totalInvested > 0
+        ? (netProfit / totalInvested) * 100.0
+        : ((data['bankInterestRate'] as num?)?.toDouble() ?? 0.0);
 
     return {
       'invested': totalInvested,
@@ -1355,110 +1792,1006 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     };
   }
 
+  // =========================================================
+  // AppBar માં ₹ (રૂપિયા) ના સંકેત પર ક્લિક કરતાં ખુલતી આખી નવી સ્ક્રીન:
+  // ૧. સંપૂર્ણ રોકાણ અને બચતનું ટકાવારી (%) સાથે એનાલિસિસ
+  // ૨. પ્રશ્નો દ્વારા રિસ્ક કેપેસિટી અને રોકાણ સરખામણી
+  // ૩. પોતાની કસ્ટમ સ્ટ્રેટેજી અને વાસ્તવિક રોકાણ સરખામણી
+  // =========================================================
   void _openAnnualTaxAndExpenseDialog() {
-    final fyTx = entireFYTransactions;
-    double annualGrossIncome = 0.0;
-    double annualTotalExpense = 0.0;
-    double annualTotalInvestment = 0.0;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (pageCtx) {
+          return StatefulBuilder(
+            builder: (pageCtx, setPageState) {
+              final data = _fetchCompletePortfolioBreakdown();
+              final double grandTotal = math.max(0.0, (data['grandTotalWealth'] as num).toDouble());
+              final double totalInvOnly = (data['totalInvestmentsVal'] as num).toDouble();
 
-    for (var tx in fyTx) {
-      final amt = (tx['amount'] as num?)?.toDouble() ?? 0.0;
-      final effect = tx['categoryEffect'];
-      if (effect == 'incomeCredit') {
-        annualGrossIncome += amt;
-      } else if (effect == 'expenseDebit' || effect == 'loanRepay') {
-        annualTotalExpense += amt;
-      } else if (effect == 'assetIncrease') {
-        annualTotalInvestment += amt;
-      }
-    }
+              final double directEquity = (data['directEquityTotal'] as num).toDouble();
+              final double mfEquity = (data['mfEquityVal'] as num).toDouble();
+              final double mfElss = (data['mfElssVal'] as num).toDouble();
+              final double mfDebt = (data['mfDebtVal'] as num).toDouble();
+              final double mfHybrid = (data['mfHybridVal'] as num).toDouble();
+              final double mfTotal = (data['mfTotalVal'] as num).toDouble();
 
-    final cg = _getCapitalGainsSummary(entireFY: true);
-    const double standardDeduction = 75000.0;
-    final double slabTaxableIncome = math.max(0.0, annualGrossIncome - standardDeduction);
-    final double slabTax = _calculateIncomeTaxNewRegime(slabTaxableIncome);
-    final double totalEstimatedTax = slabTax + (cg['totalCgTax'] ?? 0.0);
-    final double netIncomeAfterTax = (annualGrossIncome + (cg['stcg'] ?? 0.0) + (cg['ltcg'] ?? 0.0)) - totalEstimatedTax;
+              final double fdVal = (data['fdVal'] as num).toDouble();
+              final double bondVal = (data['bondVal'] as num).toDouble();
+              final double pliVal = (data['pliVal'] as num).toDouble();
+              final double ppfVal = (data['ppfPostOfficeVal'] as num).toDouble();
+              final double fixedTotal = (data['fixedIncomeTotalVal'] as num).toDouble();
 
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
-      builder: (ctx) => Padding(
-        padding: const EdgeInsets.fromLTRB(18, 20, 18, 28),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  CircleAvatar(
-                    backgroundColor: Colors.teal.shade700,
-                    child: const Icon(Icons.currency_rupee, color: Colors.white),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('વાર્ષિક કરપાત્ર આવક અને કેપિટલ ગેઇન્સ', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
-                        Text('નાણાકીય વર્ષ FY: $selectedFinancialYearStart-${(selectedFinancialYearStart + 1).toString().substring(2)}', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+              final double gold24Val = (data['gold24Val'] as num).toDouble();
+              final double gold22Val = (data['gold22Val'] as num).toDouble();
+              final double silverVal = (data['silverVal'] as num).toDouble();
+              final double bullionTotal = (data['bullionTotalVal'] as num).toDouble();
+
+              final double physicalVal = (data['physicalAssetsVal'] as num).toDouble();
+              final double bankSavings = (data['bankSavingsBalance'] as num).toDouble();
+              final double cashBal = (data['cashWalletBalance'] as num).toDouble();
+              final double liquidTotal = (data['totalLiquidSavings'] as num).toDouble();
+              final double bankIntRate = (data['bankInterestRate'] as num).toDouble();
+              final double annualBankIntRs = (data['effectiveBankInterest'] as num).toDouble();
+
+              double pctOfGrand(double v) => grandTotal > 0 ? (v / grandTotal) * 100.0 : 0.0;
+              double pctOfInv(double v) => totalInvOnly > 0 ? (v / totalInvOnly) * 100.0 : 0.0;
+
+              // --- ટેબ ૨ માટે: રિસ્ક કેપેસિટી પ્રશ્નોના જવાબો (0 થી 3 સ્કોર) ---
+              int q1Age = (settingsBox.get('risk_q1_age', defaultValue: 2) as num).toInt();
+              int q2Horizon = (settingsBox.get('risk_q2_horizon', defaultValue: 2) as num).toInt();
+              int q3DropReact = (settingsBox.get('risk_q3_drop', defaultValue: 2) as num).toInt();
+              int q4IncomeStab = (settingsBox.get('risk_q4_income', defaultValue: 2) as num).toInt();
+              int q5Emergency = (settingsBox.get('risk_q5_emerg', defaultValue: 2) as num).toInt();
+              int q6Goal = (settingsBox.get('risk_q6_goal', defaultValue: 2) as num).toInt();
+
+              final int totalRiskPoints = q1Age + q2Horizon + q3DropReact + q4IncomeStab + q5Emergency + q6Goal; // Max 18
+              final double riskScore100 = (totalRiskPoints / 18.0) * 100.0;
+
+              String riskProfileName;
+              Color riskColor;
+              Map<String, double> recommendedPct;
+
+              if (riskScore100 >= 70) {
+                riskProfileName = 'વૃદ્ધિલક્ષી / આક્રમક (Aggressive Growth)';
+                riskColor = Colors.deepPurple;
+                recommendedPct = {
+                  'ઇક્વિટી (શેર + ઇક્વિટી MF)': 60.0,
+                  'ડેબ્ટ અને હાઇબ્રીડ MF': 10.0,
+                  'FD / બોન્ડ / PLI / PPF': 10.0,
+                  'સોનું / ચાંદી (ધાતુઓ)': 10.0,
+                  'બેંક બચત અને રોકડ': 10.0,
+                };
+              } else if (riskScore100 >= 42) {
+                riskProfileName = 'મધ્યમ અને સંતુલિત (Moderate Balanced)';
+                riskColor = Colors.teal.shade700;
+                recommendedPct = {
+                  'ઇક્વિટી (શેર + ઇક્વિટી MF)': 40.0,
+                  'ડેબ્ટ અને હાઇબ્રીડ MF': 15.0,
+                  'FD / બોન્ડ / PLI / PPF': 20.0,
+                  'સોનું / ચાંદી (ધાતુઓ)': 10.0,
+                  'બેંક બચત અને રોકડ': 15.0,
+                };
+              } else {
+                riskProfileName = 'સુરક્ષિત / મૂડી રક્ષણ (Conservative)';
+                riskColor = Colors.blue.shade800;
+                recommendedPct = {
+                  'ઇક્વિટી (શેર + ઇક્વિટી MF)': 20.0,
+                  'ડેબ્ટ અને હાઇબ્રીડ MF': 15.0,
+                  'FD / બોન્ડ / PLI / PPF': 35.0,
+                  'સોનું / ચાંદી (ધાતુઓ)': 10.0,
+                  'બેંક બચત અને રોકડ': 20.0,
+                };
+              }
+
+              // પ્રશ્નોની સરખામણી માટે વાસ્તવિક ટકાવારી (સ્થાવર મિલકત સિવાયના નાણાકીય પોર્ટફોલિયો અથવા કુલ સંપત્તિના આધારે)
+              final double financialBase = math.max(1.0, grandTotal - physicalVal);
+              final Map<String, double> actualForRiskMap = {
+                'ઇક્વિટી (શેર + ઇક્વિટી MF)': ((directEquity + mfEquity + mfElss) / financialBase) * 100.0,
+                'ડેબ્ટ અને હાઇબ્રીડ MF': ((mfDebt + mfHybrid) / financialBase) * 100.0,
+                'FD / બોન્ડ / PLI / PPF': (fixedTotal / financialBase) * 100.0,
+                'સોનું / ચાંદી (ધાતુઓ)': (bullionTotal / financialBase) * 100.0,
+                'બેંક બચત અને રોકડ': (liquidTotal / financialBase) * 100.0,
+              };
+              final Map<String, double> actualRsForRiskMap = {
+                'ઇક્વિટી (શેર + ઇક્વિટી MF)': directEquity + mfEquity + mfElss,
+                'ડેબ્ટ અને હાઇબ્રીડ MF': mfDebt + mfHybrid,
+                'FD / બોન્ડ / PLI / PPF': fixedTotal,
+                'સોનું / ચાંદી (ધાતુઓ)': bullionTotal,
+                'બેંક બચત અને રોકડ': liquidTotal,
+              };
+
+              // --- ટેબ ૩ માટે: યુઝરની પોતાની કસ્ટમ સ્ટ્રેટેજી (%) ---
+              double stDirectEq = (settingsBox.get('strat_direct_eq', defaultValue: 20.0) as num).toDouble();
+              double stMfEq = (settingsBox.get('strat_mf_eq', defaultValue: 25.0) as num).toDouble();
+              double stMfDebtHyb = (settingsBox.get('strat_mf_debthyb', defaultValue: 10.0) as num).toDouble();
+              double stFixed = (settingsBox.get('strat_fixed', defaultValue: 20.0) as num).toDouble();
+              double stBullion = (settingsBox.get('strat_bullion', defaultValue: 10.0) as num).toDouble();
+              double stBank = (settingsBox.get('strat_bank', defaultValue: 15.0) as num).toDouble();
+              final double totalStrategyPct = stDirectEq + stMfEq + stMfDebtHyb + stFixed + stBullion + stBank;
+
+              return DefaultTabController(
+                length: 3,
+                child: Scaffold(
+                  appBar: AppBar(
+                    title: const Text('સંપૂર્ણ રોકાણ અને બચત વિશ્લેષણ', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    bottom: const TabBar(
+                      isScrollable: true,
+                      tabs: [
+                        Tab(icon: Icon(Icons.pie_chart, size: 18), text: '૧. રોકાણ & બચત (%)'),
+                        Tab(icon: Icon(Icons.quiz, size: 18), text: '૨. રિસ્ક કેપેસિટી પ્રશ્નો'),
+                        Tab(icon: Icon(Icons.tune, size: 18), text: '૩. મારી સ્ટ્રેટેજી સરખામણી'),
                       ],
                     ),
                   ),
-                ],
-              ),
-              const Divider(height: 24),
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: Colors.green.withOpacity(0.08),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.green.withOpacity(0.35)),
-                ),
-                child: Column(
-                  children: [
-                    _taxSummaryRow('નિયમિત કુલ આવક (Gross Income):', '₹${annualGrossIncome.toStringAsFixed(0)}', Colors.green.shade800, isBold: true),
-                    const SizedBox(height: 6),
-                    _taxSummaryRow('બાદ: સ્ટાન્ડર્ડ ડિડક્શન:', '- ₹${standardDeduction.toStringAsFixed(0)}', Colors.grey.shade700),
-                    const SizedBox(height: 6),
-                    _taxSummaryRow('Short-Term Capital Gains (STCG - 20%):', '₹${(cg['stcg'] ?? 0).toStringAsFixed(0)}', Colors.indigo),
-                    const SizedBox(height: 6),
-                    _taxSummaryRow('Long-Term Capital Gains (LTCG - 12.5%):', '₹${(cg['ltcg'] ?? 0).toStringAsFixed(0)}', Colors.teal.shade800),
-                    const Divider(),
-                    _taxSummaryRow('સ્લેબ ટેક્સ + Capital Gains ટેક્સ (4% સેસ સહિત):', '₹${totalEstimatedTax.toStringAsFixed(0)}', Colors.orange.shade900, isBold: true),
-                    const SizedBox(height: 6),
-                    _taxSummaryRow('ટેક્સ બાદ ચોખ્ખી આવક (Post-Tax Income):', '₹${netIncomeAfterTax.toStringAsFixed(0)}', Colors.green.shade900, isBold: true),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: _taxSummaryBox('આખા વર્ષનો કુલ ખર્ચ', '₹${annualTotalExpense.toStringAsFixed(0)}', Colors.red),
+                  body: TabBarView(
+                    children: [
+                      // =========================================================
+                      // ટેબ ૧: સંપૂર્ણ રોકાણ અને બચતનું ટકાવારી પ્રમાણે વિશ્લેષણ
+                      // =========================================================
+                      SingleChildScrollView(
+                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 40),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // કુલ સંપત્તિ અને બચત સારાંશ કાર્ડ
+                            Card(
+                              color: Colors.teal.shade50,
+                              child: Padding(
+                                padding: const EdgeInsets.all(14),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text('📊 કુલ રોકાણ અને બચત સારાંશ (આખી એપમાંથી ઓટો-ફેચ)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.black87)),
+                                    const Divider(),
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        _metricColumn('કુલ સંપત્તિ (રોકાણ+બચત)', '₹${grandTotal.toStringAsFixed(0)}', Colors.teal.shade900),
+                                        _metricColumn('કુલ રોકાણ મૂલ્ય', '₹${totalInvOnly.toStringAsFixed(0)} (${pctOfGrand(totalInvOnly).toStringAsFixed(1)}%)', Colors.blue.shade900),
+                                        _metricColumn('બેંક + રોકડ બચત', '₹${liquidTotal.toStringAsFixed(0)} (${pctOfGrand(liquidTotal).toStringAsFixed(1)}%)', Colors.green.shade800),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+
+                            // પાઇ ચાર્ટ રજૂઆત
+                            if (grandTotal > 0)
+                              Card(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(12),
+                                  child: Column(
+                                    children: [
+                                      const Text('વિવિધ એસેટ ક્લાસમાં રોકાણની ટકાવારી (%)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+                                      const SizedBox(height: 10),
+                                      SizedBox(
+                                        height: 175,
+                                        child: PieChart(
+                                          PieChartData(
+                                            centerSpaceRadius: 34,
+                                            sections: [
+                                              if (directEquity > 0)
+                                                PieChartSectionData(value: directEquity, title: '${pctOfGrand(directEquity).toStringAsFixed(1)}%', color: Colors.indigo, radius: 52, titleStyle: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                                              if (mfTotal > 0)
+                                                PieChartSectionData(value: mfTotal, title: '${pctOfGrand(mfTotal).toStringAsFixed(1)}%', color: Colors.teal, radius: 52, titleStyle: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                                              if (fixedTotal > 0)
+                                                PieChartSectionData(value: fixedTotal, title: '${pctOfGrand(fixedTotal).toStringAsFixed(1)}%', color: Colors.orange.shade800, radius: 52, titleStyle: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                                              if (bullionTotal > 0)
+                                                PieChartSectionData(value: bullionTotal, title: '${pctOfGrand(bullionTotal).toStringAsFixed(1)}%', color: Colors.amber.shade700, radius: 52, titleStyle: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                                              if (liquidTotal > 0)
+                                                PieChartSectionData(value: liquidTotal, title: '${pctOfGrand(liquidTotal).toStringAsFixed(1)}%', color: Colors.green, radius: 52, titleStyle: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                                              if (physicalVal > 0)
+                                                PieChartSectionData(value: physicalVal, title: '${pctOfGrand(physicalVal).toStringAsFixed(1)}%', color: Colors.purple, radius: 52, titleStyle: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Wrap(
+                                        spacing: 10,
+                                        runSpacing: 4,
+                                        children: [
+                                          _legendBadge(Colors.indigo, 'ઇક્વિટી (Stocks/ETF)'),
+                                          _legendBadge(Colors.teal, 'મ્યુચ્યુઅલ ફંડ'),
+                                          _legendBadge(Colors.orange, 'FD / બોન્ડ / PLI'),
+                                          _legendBadge(Colors.amber, 'સોનું / ચાંદી'),
+                                          _legendBadge(Colors.green, 'બેંક બચત'),
+                                          _legendBadge(Colors.purple, 'સ્થાવર મિલકત'),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+
+                            // ૧. ઇક્વિટી (Stocks & ETF)
+                            _buildAssetBreakdownCard(
+                              title: '૧. ડાયરેક્ટ ઇક્વિટી રોકાણ (Stocks & ETF)',
+                              icon: Icons.candlestick_chart,
+                              color: Colors.indigo,
+                              totalAmount: directEquity,
+                              pctOfTotalWealth: pctOfGrand(directEquity),
+                              pctOfInvestments: pctOfInv(directEquity),
+                              subItems: [
+                                {'label': 'ડાયરેક્ટ શેર (Equity Stocks)', 'amt': data['directStocksVal'], 'pct': pctOfGrand((data['directStocksVal'] as num).toDouble())},
+                                {'label': 'ETF (Nifty / Gold / International ETF)', 'amt': data['directEtfVal'], 'pct': pctOfGrand((data['directEtfVal'] as num).toDouble())},
+                              ],
+                            ),
+
+                            // ૨. મ્યુચ્યુઅલ ફંડ (Equity, Debt, Hybrid, ELSS)
+                            Card(
+                              margin: const EdgeInsets.symmetric(vertical: 6),
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        const Expanded(
+                                          child: Row(
+                                            children: [
+                                              Icon(Icons.pie_chart, color: Colors.teal, size: 20),
+                                              SizedBox(width: 8),
+                                              Expanded(child: Text('૨. મ્યુચ્યુઅલ ફંડ (Equity, Debt, Hybrid, ELSS)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5))),
+                                            ],
+                                          ),
+                                        ),
+                                        Text('₹${mfTotal.toStringAsFixed(0)} (${pctOfGrand(mfTotal).toStringAsFixed(1)}%)', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.teal, fontSize: 13.5)),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text('કુલ રોકાણોમાં હિસ્સો: ${pctOfInv(mfTotal).toStringAsFixed(1)}%', style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
+                                    const Divider(),
+                                    _subCategoryPctRow('• ઇક્વિટી મ્યુચ્યુઅલ ફંડ (Equity MF)', mfEquity, pctOfGrand(mfEquity), mfTotal > 0 ? (mfEquity / mfTotal) * 100 : 0, Colors.teal),
+                                    _subCategoryPctRow('• ડેબ્ટ મ્યુચ્યુઅલ ફંડ (Debt / Liquid MF)', mfDebt, pctOfGrand(mfDebt), mfTotal > 0 ? (mfDebt / mfTotal) * 100 : 0, Colors.blueGrey),
+                                    _subCategoryPctRow('• હાઇબ્રીડ મ્યુચ્યુઅલ ફંડ (Hybrid / Balanced)', mfHybrid, pctOfGrand(mfHybrid), mfTotal > 0 ? (mfHybrid / mfTotal) * 100 : 0, Colors.purple),
+                                    _subCategoryPctRow('• ELSS / ટેક્સ સેવર મ્યુચ્યુઅલ ફંડ', mfElss, pctOfGrand(mfElss), mfTotal > 0 ? (mfElss / mfTotal) * 100 : 0, Colors.indigo),
+                                    if (mfInvestmentsBox.isNotEmpty) ...[
+                                      const SizedBox(height: 6),
+                                      Align(
+                                        alignment: Alignment.centerRight,
+                                        child: TextButton.icon(
+                                          icon: const Icon(Icons.category, size: 15),
+                                          label: const Text('ફંડ પ્રમાણે Equity/Debt/Hybrid પ્રકાર બદલો', style: TextStyle(fontSize: 11.5)),
+                                          onPressed: () {
+                                            showDialog(
+                                              context: pageCtx,
+                                              builder: (dCtx) => StatefulBuilder(
+                                                builder: (dCtx, setDState) {
+                                                  final list = mfInvestmentsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
+                                                  return AlertDialog(
+                                                    title: const Text('મ્યુચ્યુઅલ ફંડનો પેટા-પ્રકાર સેટ કરો', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                                                    content: SizedBox(
+                                                      width: double.maxFinite,
+                                                      height: 300,
+                                                      child: ListView.builder(
+                                                        itemCount: list.length,
+                                                        itemBuilder: (_, idx) {
+                                                          final item = list[idx];
+                                                          final curCat = _classifyMfSubCategory(item);
+                                                          return ListTile(
+                                                            dense: true,
+                                                            title: Text(item['schemeName'] ?? '', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                                                            subtitle: Text('₹${item['investedAmount']}'),
+                                                            trailing: DropdownButton<String>(
+                                                              value: curCat,
+                                                              items: const [
+                                                                DropdownMenuItem(value: 'Equity', child: Text('Equity', style: TextStyle(fontSize: 12))),
+                                                                DropdownMenuItem(value: 'Debt', child: Text('Debt', style: TextStyle(fontSize: 12))),
+                                                                DropdownMenuItem(value: 'Hybrid', child: Text('Hybrid', style: TextStyle(fontSize: 12))),
+                                                                DropdownMenuItem(value: 'ELSS', child: Text('ELSS (80C)', style: TextStyle(fontSize: 12))),
+                                                              ],
+                                                              onChanged: (v) {
+                                                                if (v != null) {
+                                                                  item['mfSubCategory'] = v;
+                                                                  mfInvestmentsBox.put(item['id'], item);
+                                                                  setDState(() {});
+                                                                  setPageState(() {});
+                                                                  setState(() {});
+                                                                }
+                                                              },
+                                                            ),
+                                                          );
+                                                        },
+                                                      ),
+                                                    ),
+                                                    actions: [
+                                                      ElevatedButton(onPressed: () => Navigator.pop(dCtx), child: const Text('પૂર્ણ')),
+                                                    ],
+                                                  );
+                                                },
+                                              ),
+                                            );
+                                          },
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                            ),
+
+                            // ૩. FD, બોન્ડ, PLI, PPF/ પોસ્ટ ઓફિસ
+                            _buildAssetBreakdownCard(
+                              title: '૩. FD, બોન્ડ, PLI અને બચત યોજનાઓ',
+                              icon: Icons.account_balance_wallet,
+                              color: Colors.orange.shade800,
+                              totalAmount: fixedTotal,
+                              pctOfTotalWealth: pctOfGrand(fixedTotal),
+                              pctOfInvestments: pctOfInv(fixedTotal),
+                              subItems: [
+                                {'label': 'ફિક્સ ડિપોઝિટ (FD)', 'amt': fdVal, 'pct': pctOfGrand(fdVal)},
+                                {'label': 'બોન્ડ (Sovereign / Corp Bonds)', 'amt': bondVal, 'pct': pctOfGrand(bondVal)},
+                                {'label': 'PLI / LIC / વીમા રોકાણ', 'amt': pliVal, 'pct': pctOfGrand(pliVal)},
+                                {'label': 'PPF / SSY / RD / પોસ્ટ ઓફિસ સ્કીમ', 'amt': ppfVal, 'pct': pctOfGrand(ppfVal)},
+                              ],
+                            ),
+
+                            // ૪. વિવિધ ધાતુઓમાં રોકાણ (Gold 24K, 22K, Silver)
+                            _buildAssetBreakdownCard(
+                              title: '૪. વિવિધ ધાતુઓમાં રોકાણ (સોનું અને ચાંદી)',
+                              icon: Icons.monetization_on,
+                              color: Colors.amber.shade800,
+                              totalAmount: bullionTotal,
+                              pctOfTotalWealth: pctOfGrand(bullionTotal),
+                              pctOfInvestments: pctOfInv(bullionTotal),
+                              subItems: [
+                                {'label': 'સોનું 24K (Gold 24K)', 'amt': gold24Val, 'pct': pctOfGrand(gold24Val)},
+                                {'label': 'સોનું 22K (Gold 22K - દાગીના)', 'amt': gold22Val, 'pct': pctOfGrand(gold22Val)},
+                                {'label': 'ચાંદી (Silver)', 'amt': silverVal, 'pct': pctOfGrand(silverVal)},
+                              ],
+                            ),
+
+                            // ૫. બેંકના ખાતાઓમાં બચત અને મળતું વ્યાજ (%)
+                            Card(
+                              margin: const EdgeInsets.symmetric(vertical: 6),
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        const Expanded(
+                                          child: Row(
+                                            children: [
+                                              Icon(Icons.account_balance, color: Colors.green, size: 20),
+                                              SizedBox(width: 8),
+                                              Expanded(child: Text('૫. બેંક ખાતાઓમાં બચત અને મળતું વ્યાજ (%)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5))),
+                                            ],
+                                          ),
+                                        ),
+                                        Text('₹${liquidTotal.toStringAsFixed(0)} (${pctOfGrand(liquidTotal).toStringAsFixed(1)}%)', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green, fontSize: 13.5)),
+                                      ],
+                                    ),
+                                    const Divider(),
+                                    _taxSummaryRow('બેંક બચત ખાતાઓની કુલ સિલક:', '₹${bankSavings.toStringAsFixed(0)} (${pctOfGrand(bankSavings).toStringAsFixed(1)}%)', Colors.green.shade800, isBold: true),
+                                    const SizedBox(height: 4),
+                                    _taxSummaryRow('રોકડ સિલક (Cash Wallet):', '₹${cashBal.toStringAsFixed(0)} (${pctOfGrand(cashBal).toStringAsFixed(1)}%)', Colors.teal.shade700),
+                                    const SizedBox(height: 6),
+                                    Container(
+                                      padding: const EdgeInsets.all(10),
+                                      decoration: BoxDecoration(color: Colors.green.shade50, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.green.shade200)),
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                            children: [
+                                              Text('બેંક ખાતામાં મળતું વાર્ષિક વ્યાજ દર: ${bankIntRate.toStringAsFixed(2)}%', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5, color: Colors.green.shade900)),
+                                              InkWell(
+                                                onTap: () {
+                                                  final ctrl = TextEditingController(text: bankIntRate.toStringAsFixed(2));
+                                                  showDialog(
+                                                    context: pageCtx,
+                                                    builder: (c) => AlertDialog(
+                                                      title: const Text('બેંક ખાતાનો વાર્ષિક વ્યાજ દર (%)'),
+                                                      content: TextField(
+                                                        controller: ctrl,
+                                                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                                        decoration: const InputDecoration(labelText: 'વાર્ષિક વ્યાજ દર % (દા.ત. 3.5 અથવા 7.0)'),
+                                                      ),
+                                                      actions: [
+                                                        TextButton(onPressed: () => Navigator.pop(c), child: const Text('રદ')),
+                                                        ElevatedButton(
+                                                          onPressed: () {
+                                                            final v = double.tryParse(ctrl.text) ?? 3.5;
+                                                            settingsBox.put('bankInterestRate', v);
+                                                            Navigator.pop(c);
+                                                            setPageState(() {});
+                                                            setState(() {});
+                                                          },
+                                                          child: const Text('સેવ કરો'),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  );
+                                                },
+                                                child: const Text('વ્યાજ % બદલો ✎', style: TextStyle(fontSize: 11.5, color: Colors.teal, fontWeight: FontWeight.bold)),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 4),
+                                          _taxSummaryRow('વાર્ષિક બેંક વ્યાજની રકમ:', '₹${annualBankIntRs.toStringAsFixed(0)} / વર્ષ (${bankIntRate.toStringAsFixed(1)}%)', Colors.green.shade900, isBold: true),
+                                          if ((data['recordedBankInterest'] as num) > 0)
+                                            Text('નોંધાયેલ બેંક વ્યાજ એન્ટ્રી: ₹${(data['recordedBankInterest'] as num).toStringAsFixed(0)}', style: const TextStyle(fontSize: 11, color: Colors.black54)),
+                                        ],
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    const Text('ખાતાવાર સિલક અને ટકાવારી:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                    const SizedBox(height: 4),
+                                    ...(data['bankAccountsBreakdown'] as List<Map<String, dynamic>>).map((acc) {
+                                      final double b = (acc['balance'] as num).toDouble();
+                                      final bool isC = acc['isCash'] == true;
+                                      final double intAmt = isC ? 0.0 : b * (bankIntRate / 100.0);
+                                      return Padding(
+                                        padding: const EdgeInsets.symmetric(vertical: 2),
+                                        child: Row(
+                                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                          children: [
+                                            Expanded(child: Text('• ${acc['name']}', style: const TextStyle(fontSize: 12))),
+                                            Text(
+                                              '₹${b.toStringAsFixed(0)} (${pctOfGrand(b).toStringAsFixed(1)}%)${!isC ? ' | વ્યાજ: ₹${intAmt.toStringAsFixed(0)}' : ''}',
+                                              style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                    }),
+                                  ],
+                                ),
+                              ),
+                            ),
+
+                            // ૬. સ્થાવર મિલકત (Physical Assets)
+                            if (physicalVal > 0)
+                              _buildAssetBreakdownCard(
+                                title: '૬. અન્ય સ્થાવર મિલકત (જમીન / મકાન / પ્લોટ)',
+                                icon: Icons.home_work,
+                                color: Colors.purple,
+                                totalAmount: physicalVal,
+                                pctOfTotalWealth: pctOfGrand(physicalVal),
+                                pctOfInvestments: pctOfInv(physicalVal),
+                                subItems: [
+                                  {'label': 'કુલ સ્થાવર મિલકત મૂલ્ય', 'amt': physicalVal, 'pct': pctOfGrand(physicalVal)},
+                                ],
+                              ),
+                          ],
+                        ),
+                      ),
+
+                      // =========================================================
+                      // ટેબ ૨: પ્રશ્નો દ્વારા રિસ્ક કેપેસિટી અને રોકાણ સરખામણી
+                      // =========================================================
+                      SingleChildScrollView(
+                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 40),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Card(
+                              color: riskColor.withOpacity(0.08),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: riskColor.withOpacity(0.4))),
+                              child: Padding(
+                                padding: const EdgeInsets.all(14),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Expanded(
+                                          child: Text('તમારી રિસ્ક પ્રોફાઇલ: $riskProfileName', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5, color: riskColor)),
+                                        ),
+                                        Chip(
+                                          backgroundColor: riskColor,
+                                          label: Text('સ્કોર: ${riskScore100.toStringAsFixed(0)}/100', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 4),
+                                    const Text('નીચેના ૬ પ્રશ્નોના જવાબ આપો; એપ આપોઆપ તમારી રિસ્ક કેપેસિટી ગણીને કયા વિભાગમાં કેટલા ટકા રોકાણ હોવું જોઈએ તેની તમારા હાલના રોકાણ સાથે સરખામણી કરશે.', style: TextStyle(fontSize: 12, color: Colors.black87)),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+
+                            // પ્રશ્નાવલી કાર્ડ
+                            Card(
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text('📝 રિસ્ક કેપેસિટી મૂલ્યાંકન પ્રશ્નો:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.teal)),
+                                    const Divider(),
+                                    _buildRiskQuestionDropdown(
+                                      question: '૧. તમારી ઉંમરનો ગાળો શું છે?',
+                                      currentVal: q1Age,
+                                      options: const ['60+ વર્ષ (નિવૃત્ત)', '45 થી 60 વર્ષ', '30 થી 45 વર્ષ', '30 વર્ષથી ઓછી'],
+                                      onChanged: (v) {
+                                        settingsBox.put('risk_q1_age', v);
+                                        setPageState(() {});
+                                      },
+                                    ),
+                                    _buildRiskQuestionDropdown(
+                                      question: '૨. તમે કેટલા સમયગાળા માટે રોકાણ જાળવી શકો છો?',
+                                      currentVal: q2Horizon,
+                                      options: const ['1 થી 3 વર્ષ (ટૂંકા ગાળા)', '3 થી 5 વર્ષ (મધ્યમ ગાળા)', '5 થી 10 વર્ષ (લાંબા ગાળા)', '10+ વર્ષ (લાંબા ગાળાનું વેલ્થ ક્રિએશન)'],
+                                      onChanged: (v) {
+                                        settingsBox.put('risk_q2_horizon', v);
+                                        setPageState(() {});
+                                      },
+                                    ),
+                                    _buildRiskQuestionDropdown(
+                                      question: '૩. જો શેરબજાર અચાનક 15-20% ઘટે તો તમે શું કરશો?',
+                                      currentVal: q3DropReact,
+                                      options: const ['નુકસાનથી બચવા તરત વેચી દઈશ', 'થોડું વેચીને FD માં મૂકીશ', 'રોકાણ જાળવી રાખીશ (Hold)', 'ઘટાડામાં વધુ ખરીદી (Buy More) કરીશ'],
+                                      onChanged: (v) {
+                                        settingsBox.put('risk_q3_drop', v);
+                                        setPageState(() {});
+                                      },
+                                    ),
+                                    _buildRiskQuestionDropdown(
+                                      question: '૪. તમારી આવકની સ્થિરતા કેવી છે?',
+                                      currentVal: q4IncomeStab,
+                                      options: const ['અનિશ્ચિત આવક', 'સામાન્ય ખાનગી/ધંધાકીય આવક', 'સ્થિર માસિક પગાર / સારો વ્યવસાય', 'સરકારી/સુરક્ષિત પગાર + વધારાની આવક'],
+                                      onChanged: (v) {
+                                        settingsBox.put('risk_q4_income', v);
+                                        setPageState(() {});
+                                      },
+                                    ),
+                                    _buildRiskQuestionDropdown(
+                                      question: '૫. તમારી પાસે 6 મહિનાના ખર્ચ જેટલું ઇમરજન્સી ફંડ છે?',
+                                      currentVal: q5Emergency,
+                                      options: const ['ના, બિલકુલ નથી', '1-2 મહિના પૂરતું છે', '3-5 મહિના પૂરતું છે', 'હા, 6+ મહિનાનું સંપૂર્ણ સુરક્ષિત ફંડ છે'],
+                                      onChanged: (v) {
+                                        settingsBox.put('risk_q5_emerg', v);
+                                        setPageState(() {});
+                                      },
+                                    ),
+                                    _buildRiskQuestionDropdown(
+                                      question: '૬. તમારા રોકાણનો મુખ્ય હેતુ શું છે?',
+                                      currentVal: q6Goal,
+                                      options: const ['માત્ર મૂડીની સુરક્ષા (6-7% વળતર)', 'નિયમિત વ્યાજ અને સુરક્ષા (8-9% વળતર)', 'સંતુલિત વૃદ્ધિ અને ટેક્સ બચત (10-12% વળતર)', 'ઉચ્ચ સંપત્તિ સર્જન (13-16%+ વળતર)'],
+                                      onChanged: (v) {
+                                        settingsBox.put('risk_q6_goal', v);
+                                        setPageState(() {});
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+
+                            const SizedBox(height: 10),
+                            // પ્રશ્નોના વિશ્લેષણ મુજબ ભલામણ vs વાસ્તવિક રોકાણ સરખામણી કાર્ડ
+                            Card(
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text('⚖️ પ્રશ્નોના વિશ્લેષણ મુજબ ભલામણ vs તમારું હાલનું રોકાણ:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                                    const SizedBox(height: 4),
+                                    Text('કુલ નાણાકીય મૂડી (₹${financialBase.toStringAsFixed(0)}) ના આધારે સરખામણી:', style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
+                                    const Divider(),
+                                    ...recommendedPct.entries.map((entry) {
+                                      final String cat = entry.key;
+                                      final double recPct = entry.value;
+                                      final double actPct = actualForRiskMap[cat] ?? 0.0;
+                                      final double actRs = actualRsForRiskMap[cat] ?? 0.0;
+                                      final double targetRs = financialBase * (recPct / 100.0);
+                                      final double diffPct = actPct - recPct;
+                                      final double diffRs = actRs - targetRs;
+                                      final bool isAligned = diffPct.abs() <= 5.0;
+
+                                      return Container(
+                                        margin: const EdgeInsets.symmetric(vertical: 6),
+                                        padding: const EdgeInsets.all(10),
+                                        decoration: BoxDecoration(
+                                          color: isAligned ? Colors.green.withOpacity(0.06) : Colors.orange.withOpacity(0.07),
+                                          borderRadius: BorderRadius.circular(10),
+                                          border: Border.all(color: isAligned ? Colors.green.shade300 : Colors.orange.shade300),
+                                        ),
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Row(
+                                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                              children: [
+                                                Expanded(child: Text(cat, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
+                                                Container(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                                  decoration: BoxDecoration(
+                                                    color: isAligned ? Colors.green : (diffPct > 0 ? Colors.orange.shade800 : Colors.blue.shade700),
+                                                    borderRadius: BorderRadius.circular(12),
+                                                  ),
+                                                  child: Text(
+                                                    isAligned
+                                                        ? '✅ યોગ્ય છે'
+                                                        : (diffPct > 0 ? '⬆️ +${diffPct.toStringAsFixed(1)}% વધુ' : '⬇️ ${diffPct.toStringAsFixed(1)}% ઓછું'),
+                                                    style: const TextStyle(color: Colors.white, fontSize: 10.5, fontWeight: FontWeight.bold),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            const SizedBox(height: 6),
+                                            Row(
+                                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                              children: [
+                                                Text('ભલામણ: ${recPct.toStringAsFixed(1)}% (₹${targetRs.toStringAsFixed(0)})', style: const TextStyle(fontSize: 12, color: Colors.teal, fontWeight: FontWeight.w600)),
+                                                Text('હાલમાં: ${actPct.toStringAsFixed(1)}% (₹${actRs.toStringAsFixed(0)})', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                                              ],
+                                            ),
+                                            const SizedBox(height: 4),
+                                            ClipRRect(
+                                              borderRadius: BorderRadius.circular(4),
+                                              child: LinearProgressIndicator(
+                                                value: (actPct / 100.0).clamp(0.0, 1.0),
+                                                minHeight: 7,
+                                                backgroundColor: Colors.grey.shade200,
+                                                color: isAligned ? Colors.green : Colors.orange.shade800,
+                                              ),
+                                            ),
+                                            if (!isAligned) ...[
+                                              const SizedBox(height: 4),
+                                              Text(
+                                                diffRs > 0
+                                                    ? '💡 સૂચન: રિસ્ક પ્રોફાઇલ મુજબ આ વિભાગમાં ₹${diffRs.abs().toStringAsFixed(0)} વધુ રોકાયેલ છે.'
+                                                    : '💡 સૂચન: રિસ્ક પ્રોફાઇલ મુજબ આ વિભાગમાં હજુ ₹${diffRs.abs().toStringAsFixed(0)} નું રોકાણ વધારવું જોઈએ.',
+                                                style: TextStyle(fontSize: 11.5, color: Colors.orange.shade900, fontWeight: FontWeight.w600),
+                                              ),
+                                            ],
+                                          ],
+                                        ),
+                                      );
+                                    }),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      // =========================================================
+                      // ટેબ ૩: વ્યક્તિ પોતાની સ્ટ્રેટેજી બનાવી શકે અને રોકાણ સરખાવી શકે
+                      // =========================================================
+                      SingleChildScrollView(
+                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 40),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Card(
+                              color: Colors.indigo.shade50,
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        const Expanded(
+                                          child: Text('🎯 મારી કસ્ટમ રોકાણ સ્ટ્રેટેજી (Target Allocation %)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.indigo)),
+                                        ),
+                                        Chip(
+                                          backgroundColor: (totalStrategyPct - 100.0).abs() < 0.5 ? Colors.green : Colors.red,
+                                          label: Text('કુલ: ${totalStrategyPct.toStringAsFixed(0)}%', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                                        ),
+                                      ],
+                                    ),
+                                    const Text('તમે કયા વિભાગમાં કેટલા ટકા (%) રોકાણ કરવા માંગો છો તે સ્લાઇડરથી નક્કી કરો. એપ તમારા હાલના રોકાણ સાથે તેની લાઇવ સરખામણી બતાવશે.', style: TextStyle(fontSize: 11.5, color: Colors.black87)),
+                                    const Divider(),
+                                    _buildStrategySliderRow(
+                                      label: '૧. ડાયરેક્ટ ઇક્વિટી (Stocks & ETF)',
+                                      value: stDirectEq,
+                                      onChanged: (v) {
+                                        settingsBox.put('strat_direct_eq', v.roundToDouble());
+                                        setPageState(() {});
+                                      },
+                                    ),
+                                    _buildStrategySliderRow(
+                                      label: '૨. ઇક્વિટી મ્યુચ્યુઅલ ફંડ (Equity & ELSS MF)',
+                                      value: stMfEq,
+                                      onChanged: (v) {
+                                        settingsBox.put('strat_mf_eq', v.roundToDouble());
+                                        setPageState(() {});
+                                      },
+                                    ),
+                                    _buildStrategySliderRow(
+                                      label: '૩. ડેબ્ટ અને હાઇબ્રીડ MF (Debt & Hybrid)',
+                                      value: stMfDebtHyb,
+                                      onChanged: (v) {
+                                        settingsBox.put('strat_mf_debthyb', v.roundToDouble());
+                                        setPageState(() {});
+                                      },
+                                    ),
+                                    _buildStrategySliderRow(
+                                      label: '૪. FD / બોન્ડ / PLI / PPF (સુરક્ષિત)',
+                                      value: stFixed,
+                                      onChanged: (v) {
+                                        settingsBox.put('strat_fixed', v.roundToDouble());
+                                        setPageState(() {});
+                                      },
+                                    ),
+                                    _buildStrategySliderRow(
+                                      label: '૫. સોનું અને ચાંદી (કિંમતી ધાતુઓ)',
+                                      value: stBullion,
+                                      onChanged: (v) {
+                                        settingsBox.put('strat_bullion', v.roundToDouble());
+                                        setPageState(() {});
+                                      },
+                                    ),
+                                    _buildStrategySliderRow(
+                                      label: '૬. બેંક બચત ખાતું અને રોકડ',
+                                      value: stBank,
+                                      onChanged: (v) {
+                                        settingsBox.put('strat_bank', v.roundToDouble());
+                                        setPageState(() {});
+                                      },
+                                    ),
+                                    if ((totalStrategyPct - 100.0).abs() >= 0.5)
+                                      Padding(
+                                        padding: const EdgeInsets.only(top: 6),
+                                        child: Row(
+                                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                          children: [
+                                            Text('⚠️ કુલ સરવાળો 100% હોવો જોઈએ (હાલ: ${totalStrategyPct.toStringAsFixed(0)}%)', style: const TextStyle(color: Colors.red, fontSize: 11.5, fontWeight: FontWeight.bold)),
+                                            ElevatedButton(
+                                              style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 10)),
+                                              onPressed: () {
+                                                if (totalStrategyPct > 0) {
+                                                  final factor = 100.0 / totalStrategyPct;
+                                                  final d1 = (stDirectEq * factor).roundToDouble();
+                                                  final d2 = (stMfEq * factor).roundToDouble();
+                                                  final d3 = (stMfDebtHyb * factor).roundToDouble();
+                                                  final d4 = (stFixed * factor).roundToDouble();
+                                                  final d5 = (stBullion * factor).roundToDouble();
+                                                  final d6 = math.max(0.0, 100.0 - (d1 + d2 + d3 + d4 + d5));
+                                                  settingsBox.put('strat_direct_eq', d1);
+                                                  settingsBox.put('strat_mf_eq', d2);
+                                                  settingsBox.put('strat_mf_debthyb', d3);
+                                                  settingsBox.put('strat_fixed', d4);
+                                                  settingsBox.put('strat_bullion', d5);
+                                                  settingsBox.put('strat_bank', d6);
+                                                  setPageState(() {});
+                                                }
+                                              },
+                                              child: const Text('100% બેલેન્સ કરો', style: TextStyle(fontSize: 11)),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ),
+
+                            const SizedBox(height: 10),
+                            // કસ્ટમ સ્ટ્રેટેજી vs વાસ્તવિક રોકાણ સરખામણી કાર્ડ
+                            Card(
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text('📊 મારી સ્ટ્રેટેજી vs એપમાં થયેલ વાસ્તવિક રોકાણ સરખામણી:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                                    const Divider(),
+                                    ...[
+                                      {'name': '૧. ડાયરેક્ટ ઇક્વિટી (Stocks & ETF)', 'targetPct': stDirectEq, 'actualRs': directEquity},
+                                      {'name': '૨. ઇક્વિટી મ્યુચ્યુઅલ ફંડ (Equity & ELSS)', 'targetPct': stMfEq, 'actualRs': mfEquity + mfElss},
+                                      {'name': '૩. ડેબ્ટ અને હાઇબ્રીડ મ્યુચ્યુઅલ ફંડ', 'targetPct': stMfDebtHyb, 'actualRs': mfDebt + mfHybrid},
+                                      {'name': '૪. FD / બોન્ડ / PLI / PPF', 'targetPct': stFixed, 'actualRs': fixedTotal},
+                                      {'name': '૫. સોનું અને ચાંદી (ધાતુઓ)', 'targetPct': stBullion, 'actualRs': bullionTotal},
+                                      {'name': '૬. બેંક બચત ખાતું અને રોકડ', 'targetPct': stBank, 'actualRs': liquidTotal},
+                                    ].map((item) {
+                                      final String title = item['name'] as String;
+                                      final double tPct = (item['targetPct'] as num).toDouble();
+                                      final double aRs = (item['actualRs'] as num).toDouble();
+                                      final double aPct = financialBase > 0 ? (aRs / financialBase) * 100.0 : 0.0;
+                                      final double tRs = financialBase * (tPct / 100.0);
+                                      final double diffRs = aRs - tRs;
+                                      final double diffPct = aPct - tPct;
+                                      final bool isMatch = diffPct.abs() <= 4.0;
+
+                                      return Container(
+                                        margin: const EdgeInsets.symmetric(vertical: 5),
+                                        padding: const EdgeInsets.all(10),
+                                        decoration: BoxDecoration(
+                                          color: isMatch ? Colors.teal.withOpacity(0.06) : Colors.deepOrange.withOpacity(0.06),
+                                          borderRadius: BorderRadius.circular(10),
+                                          border: Border.all(color: isMatch ? Colors.teal.shade300 : Colors.deepOrange.shade200),
+                                        ),
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Row(
+                                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                              children: [
+                                                Expanded(child: Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5))),
+                                                Text(
+                                                  isMatch
+                                                      ? '✅ સ્ટ્રેટેજી મુજબ બરાબર'
+                                                      : (diffPct > 0 ? '⬆️ +${diffPct.toStringAsFixed(1)}% વધુ' : '⬇️ ${diffPct.toStringAsFixed(1)}% ઓછું'),
+                                                  style: TextStyle(
+                                                    fontSize: 11,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: isMatch ? Colors.teal.shade800 : Colors.deepOrange.shade800,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            const SizedBox(height: 4),
+                                            Row(
+                                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                              children: [
+                                                Text('મારી સ્ટ્રેટેજી: ${tPct.toStringAsFixed(1)}% (₹${tRs.toStringAsFixed(0)})', style: const TextStyle(fontSize: 11.5, color: Colors.indigo, fontWeight: FontWeight.w600)),
+                                                Text('વાસ્તવિક: ${aPct.toStringAsFixed(1)}% (₹${aRs.toStringAsFixed(0)})', style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold)),
+                                              ],
+                                            ),
+                                            const SizedBox(height: 4),
+                                            Text(
+                                              isMatch
+                                                  ? 'તમારું રોકાણ તમારી સ્ટ્રેટેજી પ્રમાણે સંતુલિત છે.'
+                                                  : (diffRs > 0
+                                                      ? 'સ્ટ્રેટેજી કરતાં ₹${diffRs.abs().toStringAsFixed(0)} વધુ રોકાયેલ છે.'
+                                                      : 'સ્ટ્રેટેજી મુજબ કરવા હજુ ₹${diffRs.abs().toStringAsFixed(0)} રોકવાના બાકી છે.'),
+                                              style: const TextStyle(fontSize: 11, color: Colors.black87),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                    }),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _taxSummaryBox('આખા વર્ષનું કુલ રોકાણ', '₹${annualTotalInvestment.toStringAsFixed(0)}', Colors.blue),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
-                  onPressed: () => Navigator.pop(ctx),
-                  icon: const Icon(Icons.check_circle_outline),
-                  label: const Text('બંધ કરો'),
                 ),
-              ),
-            ],
-          ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildAssetBreakdownCard({
+    required String title,
+    required IconData icon,
+    required Color color,
+    required double totalAmount,
+    required double pctOfTotalWealth,
+    required double pctOfInvestments,
+    required List<Map<String, dynamic>> subItems,
+  }) {
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Row(
+                    children: [
+                      Icon(icon, color: color, size: 20),
+                      const SizedBox(width: 8),
+                      Expanded(child: Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5))),
+                    ],
+                  ),
+                ),
+                Text('₹${totalAmount.toStringAsFixed(0)} (${pctOfTotalWealth.toStringAsFixed(1)}%)', style: TextStyle(fontWeight: FontWeight.bold, color: color, fontSize: 13.5)),
+              ],
+            ),
+            const SizedBox(height: 3),
+            Text('કુલ રોકાણોમાં હિસ્સો: ${pctOfInvestments.toStringAsFixed(1)}%', style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
+            const Divider(),
+            ...subItems.map((s) {
+              final double amt = (s['amt'] as num?)?.toDouble() ?? 0.0;
+              final double pct = (s['pct'] as num?)?.toDouble() ?? 0.0;
+              final double shareInGroup = totalAmount > 0 ? (amt / totalAmount) * 100.0 : 0.0;
+              return _subCategoryPctRow('• ${s['label']}', amt, pct, shareInGroup, color);
+            }),
+          ],
         ),
       ),
+    );
+  }
+
+  Widget _subCategoryPctRow(String label, double amount, double pctOfGrand, double pctInsideGroup, Color color) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(child: Text(label, style: const TextStyle(fontSize: 12))),
+              Text('₹${amount.toStringAsFixed(0)}  (${pctOfGrand.toStringAsFixed(1)}%)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: color)),
+            ],
+          ),
+          const SizedBox(height: 2),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(3),
+            child: LinearProgressIndicator(
+              value: (pctOfGrand / 100.0).clamp(0.0, 1.0),
+              minHeight: 5,
+              backgroundColor: Colors.grey.shade200,
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRiskQuestionDropdown({
+    required String question,
+    required int currentVal,
+    required List<String> options,
+    required ValueChanged<int> onChanged,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(question, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12.5)),
+          const SizedBox(height: 4),
+          DropdownButtonFormField<int>(
+            initialValue: currentVal.clamp(0, options.length - 1),
+            isExpanded: true,
+            decoration: const InputDecoration(isDense: true, border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8)),
+            items: List.generate(options.length, (i) => DropdownMenuItem(value: i, child: Text(options[i], style: const TextStyle(fontSize: 12)))),
+            onChanged: (v) {
+              if (v != null) onChanged(v);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStrategySliderRow({
+    required String label,
+    required double value,
+    required ValueChanged<double> onChanged,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Expanded(child: Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600))),
+            Text('${value.toStringAsFixed(0)}%', style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.indigo)),
+          ],
+        ),
+        Slider(
+          value: value.clamp(0.0, 100.0),
+          min: 0,
+          max: 100,
+          divisions: 100,
+          label: '${value.toStringAsFixed(0)}%',
+          onChanged: onChanged,
+        ),
+      ],
     );
   }
 
@@ -1480,6 +2813,17 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     );
   }
 
+  Widget _legendBadge(Color color, String label) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(width: 10, height: 10, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+        const SizedBox(width: 4),
+        Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+      ],
+    );
+  }
+
   Widget _taxSummaryRow(String label, String value, Color valueColor, {bool isBold = false}) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1489,6 +2833,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       ],
     );
   }
+
 
   // --- દૈનિક નોંધ ડાયલોગ ---
   void _openTransactionDialog({Map<dynamic, dynamic>? existingTx}) {
@@ -1740,14 +3085,30 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     final double totalSavings = totalInc - totalExp;
     final double savingsRate = totalInc > 0 ? (totalSavings / totalInc) * 100.0 : 0.0;
 
-    final cgSummary = _getCapitalGainsSummary(entireFY: false);
-    final double stcg = cgSummary['stcg'] ?? 0.0;
-    final double ltcg = cgSummary['ltcg'] ?? 0.0;
-    final double cgTax = cgSummary['totalCgTax'] ?? 0.0;
+    // ચોથા અને પાંચમા ફોટા મુજબ આખા વર્ષની કરપાત્ર આવક અને ડિડક્શન (આખી એપમાંથી ઓટો-ફેચ)
+    final taxData = _fetchComprehensiveTaxData(entireFY: true);
+    final double fyGrossInc = taxData['grossIncome'] ?? 0.0;
+    final double taxableNew = taxData['taxableNew'] ?? 0.0;
+    final double slabTaxNew = taxData['slabTaxNew'] ?? 0.0;
+    final double totalTaxNew = taxData['totalTaxNew'] ?? 0.0;
 
-    final double taxableRegular = math.max(0.0, totalInc - 75000.0);
-    final double regularTax = _calculateIncomeTaxNewRegime(taxableRegular);
-    final double totalEstimatedTax = regularTax + cgTax;
+    final double taxableOld = taxData['taxableOld'] ?? 0.0;
+    final double slabTaxOld = taxData['slabTaxOld'] ?? 0.0;
+    final double totalTaxOld = taxData['totalTaxOld'] ?? 0.0;
+    final double allowed80C = taxData['allowed80C'] ?? 0.0;
+    final double allowed80D = taxData['allowed80D'] ?? 0.0;
+    final double allowed80TTA = taxData['allowed80TTA'] ?? 0.0;
+    final double extraDed = taxData['extraDeductions'] ?? 0.0;
+    final double totalOldDed = taxData['totalOldDeductions'] ?? 0.0;
+
+    final double stcg = taxData['stcg'] ?? 0.0;
+    final double ltcg = taxData['ltcg'] ?? 0.0;
+    final double cgTax = taxData['cgTax'] ?? 0.0;
+
+    final String selectedRegime = settingsBox.get('selectedTaxRegime', defaultValue: 'new').toString(); // new, old, compare
+    final String ageGroup = settingsBox.get('taxAgeGroup', defaultValue: 'regular').toString(); // regular, senior, super_senior
+    final double activeTotalTax = selectedRegime == 'old' ? totalTaxOld : totalTaxNew;
+    final double activeTaxableRegular = selectedRegime == 'old' ? taxableOld : taxableNew;
 
     final portfolioMetrics = _calculatePortfolioReturnMetrics();
     final double annualReturnPercent = portfolioMetrics['returnPercent'] ?? 0.0;
@@ -1775,16 +3136,21 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
         breakdownMap[k] = (breakdownMap[k] ?? 0.0) + (tx['amount'] as num).toDouble();
       }
     } else if (selectedAnalysisMetric == AnalysisMetric.investment) {
-      for (final tx in filteredTransactions.where((t) => t['categoryEffect'] == 'assetIncrease')) {
-        final k = tx['title'] ?? tx['categoryName'] ?? 'રોકાણ';
-        breakdownMap[k] = (breakdownMap[k] ?? 0.0) + (tx['amount'] as num).toDouble();
-      }
+      final pData = _fetchCompletePortfolioBreakdown();
+      breakdownMap = {
+        'ડાયરેક્ટ ઇક્વિટી (Stocks/ETF)': (pData['directEquityTotal'] as num).toDouble(),
+        'મ્યુચ્યુઅલ ફંડ (MF/SIP)': (pData['mfTotalVal'] as num).toDouble(),
+        'FD / બોન્ડ / PLI / PPF': (pData['fixedIncomeTotalVal'] as num).toDouble(),
+        'સોનું અને ચાંદી': (pData['bullionTotalVal'] as num).toDouble(),
+        'સ્થાવર મિલકત': (pData['physicalAssetsVal'] as num).toDouble(),
+      };
     } else if (selectedAnalysisMetric == AnalysisMetric.taxableIncome) {
       breakdownMap = {
-        'કરપાત્ર નિયમિત આવક': taxableRegular,
+        'કરપાત્ર આવક (New Regime)': taxableNew,
+        'કરપાત્ર આવક (Old Regime)': taxableOld,
         'Short-Term Gains (STCG)': math.max(0.0, stcg),
         'Long-Term Gains (LTCG)': math.max(0.0, ltcg),
-        'અંદાજિત કુલ ટેક્સ': totalEstimatedTax,
+        'અંદાજિત ટેક્સ (${selectedRegime == 'old' ? 'Old' : 'New'})': activeTotalTax,
       };
     }
 
@@ -1943,7 +3309,9 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text('💰 બચત અને વાર્ષિક રિટર્ન vs મોંઘવારી (Inflation)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5, color: Colors.black87)),
+                      const Expanded(
+                        child: Text('💰 બચત અને વાર્ષિક રિટર્ન vs મોંઘવારી (Inflation)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5, color: Colors.black87)),
+                      ),
                       InkWell(
                         onTap: () {
                           final ctrl = TextEditingController(text: benchmarkInflationRate.toStringAsFixed(1));
@@ -2011,22 +3379,173 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             ),
           ),
 
-          // કરપાત્ર આવક અને STCG / LTCG ઓટો-ફેચ કાર્ડ
+          // =========================================================
+          // ત્રીજા ફોટામાં જ દેખાતું કરપાત્ર આવક અને Capital Gains (STCG / LTCG) વિશ્લેષણ કાર્ડ
+          // (ચોથા ફોટા: New Tax Regime FY 2026-27 અને પાંચમા ફોટા: Old Tax Regime + 80C/80D/Age Group મુજબ)
+          // =========================================================
           Card(
+            elevation: 2,
             child: Padding(
               padding: const EdgeInsets.all(12),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('🧾 કરપાત્ર આવક અને Capital Gains (STCG / LTCG) વિશ્લેષણ', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
-                  const Divider(),
-                  _taxSummaryRow('નિયમિત કરપાત્ર આવક (સ્ટાન્ડર્ડ ડિડક્શન બાદ):', '₹${taxableRegular.toStringAsFixed(0)}', Colors.black87),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Expanded(
+                        child: Text(
+                          '🧾 કરપાત્ર આવક અને Capital Gains (STCG / LTCG) વિશ્લેષણ',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5),
+                        ),
+                      ),
+                      Text(
+                        'FY $selectedFinancialYearStart-${(selectedFinancialYearStart + 1).toString().substring(2)}',
+                        style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Colors.teal),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  // New vs Old Regime પસંદગી અને ઉંમર જૂથ
+                  Row(
+                    children: [
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          initialValue: selectedRegime,
+                          isExpanded: true,
+                          decoration: const InputDecoration(labelText: 'ટેક્સ રિજીમ (ફોટો ૪ & ૫)', isDense: true, border: OutlineInputBorder()),
+                          items: const [
+                            DropdownMenuItem(value: 'new', child: Text('New Tax Regime (FY 2026-27)', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold))),
+                            DropdownMenuItem(value: 'old', child: Text('Old Tax Regime (80C/80D સાથે)', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold))),
+                          ],
+                          onChanged: (v) {
+                            if (v != null) {
+                              settingsBox.put('selectedTaxRegime', v);
+                              setState(() {});
+                            }
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          initialValue: ageGroup,
+                          isExpanded: true,
+                          decoration: const InputDecoration(labelText: 'ઉંમર જૂથ (Age Group)', isDense: true, border: OutlineInputBorder()),
+                          items: const [
+                            DropdownMenuItem(value: 'regular', child: Text('સામાન્ય (< 60 વર્ષ)', style: TextStyle(fontSize: 11.5))),
+                            DropdownMenuItem(value: 'senior', child: Text('સિનિયર (60-80 વર્ષ)', style: TextStyle(fontSize: 11.5))),
+                            DropdownMenuItem(value: 'super_senior', child: Text('સુપર સિનિયર (80+ વર્ષ)', style: TextStyle(fontSize: 11.5))),
+                          ],
+                          onChanged: (v) {
+                            if (v != null) {
+                              settingsBox.put('taxAgeGroup', v);
+                              setState(() {});
+                            }
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                  const Divider(height: 18),
+                  _taxSummaryRow('કુલ વાર્ષિક નિયમિત આવક (Gross Income):', '₹${fyGrossInc.toStringAsFixed(0)}', Colors.green.shade800, isBold: true),
+                  const SizedBox(height: 4),
+                  if (selectedRegime == 'new') ...[
+                    _taxSummaryRow('બાદ: સ્ટાન્ડર્ડ ડિડક્શન (New Regime):', '- ₹75000', Colors.grey.shade700),
+                    const SizedBox(height: 4),
+                    _taxSummaryRow('નિયમિત કરપાત્ર આવક (સ્ટાન્ડર્ડ ડિડક્શન બાદ):', '₹${taxableNew.toStringAsFixed(0)}', Colors.black87, isBold: true),
+                    if (taxableNew > 0 && taxableNew <= 1200000)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 2),
+                        child: Text('✨ કલમ 87A રિબેટ લાગુ: ₹12,00,000 સુધીની કરપાત્ર આવક પર સ્લેબ ટેક્સ ₹0', style: TextStyle(fontSize: 11, color: Colors.green, fontWeight: FontWeight.bold)),
+                      ),
+                  ] else ...[
+                    _taxSummaryRow('બાદ: સ્ટાન્ડર્ડ ડિડક્શન (Old Regime):', '- ₹50000', Colors.grey.shade700),
+                    _taxSummaryRow('બાદ: કલમ 80C રોકાણ (PLI/PPF/ELSS/FD ઓટો-ફેચ):', '- ₹${allowed80C.toStringAsFixed(0)}', Colors.teal.shade700),
+                    _taxSummaryRow('બાદ: કલમ 80D (હેલ્થ વીમો) + 80TTA/TTB:', '- ₹${(allowed80D + allowed80TTA).toStringAsFixed(0)}', Colors.teal.shade700),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(
+                          child: InkWell(
+                            onTap: () {
+                              final ctrl = TextEditingController(text: (settingsBox.get('extraOldRegimeDeductions', defaultValue: 0.0) as num).toStringAsFixed(0));
+                              showDialog(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  title: const Text('વધારાનું ડિડક્શન (HRA / LTA / 80E / હોમ લોન)'),
+                                  content: TextField(
+                                    controller: ctrl,
+                                    keyboardType: TextInputType.number,
+                                    decoration: const InputDecoration(labelText: 'રકમ (₹)'),
+                                  ),
+                                  actions: [
+                                    TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ')),
+                                    ElevatedButton(
+                                      onPressed: () {
+                                        settingsBox.put('extraOldRegimeDeductions', double.tryParse(ctrl.text) ?? 0.0);
+                                        setState(() {});
+                                        Navigator.pop(ctx);
+                                      },
+                                      child: const Text('સેવ કરો'),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                            child: const Text('બાદ: HRA / LTA / 80E / અન્ય ડિડક્શન ✎:', style: TextStyle(fontSize: 12, color: Colors.indigo, decoration: TextDecoration.underline)),
+                          ),
+                        ),
+                        Text('- ₹${extraDed.toStringAsFixed(0)}', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.indigo)),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    _taxSummaryRow('નિયમિત કરપાત્ર આવક (કુલ ₹${totalOldDed.toStringAsFixed(0)} બાદ):', '₹${taxableOld.toStringAsFixed(0)}', Colors.black87, isBold: true),
+                    if (taxableOld > 0 && taxableOld <= 500000)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 2),
+                        child: Text('✨ કલમ 87A રિબેટ લાગુ: ₹5,00,000 સુધીની કરપાત્ર આવક પર સ્લેબ ટેક્સ ₹0', style: TextStyle(fontSize: 11, color: Colors.green, fontWeight: FontWeight.bold)),
+                      ),
+                  ],
                   const SizedBox(height: 4),
                   _taxSummaryRow('Short-Term Capital Gains (STCG @ 20%):', '₹${stcg.toStringAsFixed(0)}', Colors.indigo),
                   const SizedBox(height: 4),
                   _taxSummaryRow('Long-Term Capital Gains (LTCG @ 12.5% > ₹1.25L):', '₹${ltcg.toStringAsFixed(0)}', Colors.teal.shade800),
                   const Divider(),
-                  _taxSummaryRow('કુલ અંદાજિત ટેક્સ જવાબદારી (4% સેસ સહિત):', '₹${totalEstimatedTax.toStringAsFixed(0)}', Colors.red.shade800, isBold: true),
+                  _taxSummaryRow(
+                    'કુલ અંદાજિત ટેક્સ જવાબદારી (4% સેસ સહિત):',
+                    '₹${activeTotalTax.toStringAsFixed(0)}',
+                    Colors.red.shade800,
+                    isBold: true,
+                  ),
+                  const SizedBox(height: 8),
+                  // New vs Old Regime સરખામણી બોક્સ
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.blueGrey.withOpacity(0.08),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text('New Regime ટેક્સ: ₹${totalTaxNew.toStringAsFixed(0)}', style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Colors.teal)),
+                            Text('Old Regime ટેક્સ: ₹${totalTaxOld.toStringAsFixed(0)}', style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Colors.deepPurple)),
+                          ],
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          totalTaxNew <= totalTaxOld
+                              ? '💡 ભલામણ: તમારા માટે New Tax Regime માં ₹${(totalTaxOld - totalTaxNew).toStringAsFixed(0)} ટેક્સ બચે છે.'
+                              : '💡 ભલામણ: તમારા માટે Old Tax Regime માં ₹${(totalTaxNew - totalTaxOld).toStringAsFixed(0)} ટેક્સ બચે છે.',
+                          style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Colors.black87),
+                        ),
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -4370,7 +5889,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
               backgroundColor: Colors.teal,
               child: const Icon(Icons.currency_rupee, color: Colors.white, size: 17),
             ),
-            tooltip: 'વાર્ષિક કરપાત્ર આવક અને STCG/LTCG જુઓ',
+            tooltip: 'સંપૂર્ણ રોકાણ, બચત, રિસ્ક અને સ્ટ્રેટેજી વિશ્લેષણ',
             onPressed: _openAnnualTaxAndExpenseDialog,
           ),
           IconButton(icon: const Icon(Icons.settings), tooltip: 'સેટિંગ્સ', onPressed: _openSettingsDialog),
