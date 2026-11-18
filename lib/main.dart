@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -75,6 +77,14 @@ class FinanceApp extends StatelessWidget {
         return ValueListenableBuilder<Color>(
           valueListenable: appSeedColor,
           builder: (context, primaryColor, _) {
+            final lightScheme = ColorScheme.fromSeed(
+              seedColor: primaryColor,
+              brightness: Brightness.light,
+            );
+            final darkScheme = ColorScheme.fromSeed(
+              seedColor: primaryColor,
+              brightness: Brightness.dark,
+            );
             return MaterialApp(
               title: 'નાણાકીય મેનેજર',
               debugShowCheckedModeBanner: false,
@@ -82,25 +92,58 @@ class FinanceApp extends StatelessWidget {
               theme: ThemeData(
                 useMaterial3: true,
                 brightness: Brightness.light,
-                colorSchemeSeed: primaryColor,
+                colorScheme: lightScheme,
                 scaffoldBackgroundColor: Colors.grey.shade100,
                 cardTheme: const CardThemeData(color: Colors.white, elevation: 1.5),
+                appBarTheme: AppBarTheme(
+                  backgroundColor: Colors.white,
+                  foregroundColor: Colors.black87,
+                  elevation: 0.5,
+                  iconTheme: IconThemeData(color: primaryColor),
+                ),
               ),
               darkTheme: ThemeData(
                 useMaterial3: true,
                 brightness: Brightness.dark,
-                colorSchemeSeed: primaryColor,
+                colorScheme: darkScheme,
                 scaffoldBackgroundColor: const Color(0xFF121212),
                 cardTheme: const CardThemeData(color: Color(0xFF1E1E1E), elevation: 2),
+                appBarTheme: const AppBarTheme(
+                  backgroundColor: Color(0xFF1A1A1A),
+                  foregroundColor: Colors.white,
+                  elevation: 0.5,
+                ),
                 textTheme: const TextTheme(
+                  displayLarge: TextStyle(color: Colors.white),
+                  displayMedium: TextStyle(color: Colors.white),
+                  displaySmall: TextStyle(color: Colors.white),
+                  headlineLarge: TextStyle(color: Colors.white),
+                  headlineMedium: TextStyle(color: Colors.white),
+                  headlineSmall: TextStyle(color: Colors.white),
                   bodyLarge: TextStyle(color: Colors.white),
-                  bodyMedium: TextStyle(color: Colors.white70),
-                  bodySmall: TextStyle(color: Colors.white60),
+                  bodyMedium: TextStyle(color: Colors.white),
+                  bodySmall: TextStyle(color: Colors.white70),
                   titleLarge: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                   titleMedium: TextStyle(color: Colors.white),
                   titleSmall: TextStyle(color: Colors.white70),
+                  labelLarge: TextStyle(color: Colors.white),
+                  labelMedium: TextStyle(color: Colors.white70),
+                  labelSmall: TextStyle(color: Colors.white60),
                 ),
-                dialogTheme: const DialogThemeData(backgroundColor: Color(0xFF1E1E1E)),
+                iconTheme: const IconThemeData(color: Colors.white70),
+                listTileTheme: const ListTileThemeData(
+                  textColor: Colors.white,
+                  iconColor: Colors.white70,
+                ),
+                inputDecorationTheme: const InputDecorationTheme(
+                  labelStyle: TextStyle(color: Colors.white70),
+                  hintStyle: TextStyle(color: Colors.white54),
+                ),
+                dialogTheme: const DialogThemeData(
+                  backgroundColor: Color(0xFF1E1E1E),
+                  titleTextStyle: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                  contentTextStyle: TextStyle(color: Colors.white),
+                ),
                 bottomSheetTheme: const BottomSheetThemeData(backgroundColor: Color(0xFF1E1E1E)),
               ),
               home: const AuthGate(),
@@ -146,7 +189,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
 
   bool _isInitialized = false;
 
-  // (૨) બેકગ્રાઉન્ડ ઓટો-લોક અને પાસવર્ડ + બાયોમેટ્રિક અનલોક સ્ટેટ્સ
+  // બેકગ્રાઉન્ડ ઓટો-લોક અને પાસવર્ડ + બાયોમેટ્રિક અનલોક સ્ટેટ્સ
   bool _isAppLocked = false;
   bool _isAuthenticating = false;
   DateTime? _pausedTime;
@@ -154,6 +197,11 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   final TextEditingController _unlockPasswordCtrl = TextEditingController();
   bool _obscureUnlockPwd = true;
   String _unlockErrorMsg = '';
+
+  // રીમાઇન્ડર અને ફ્લેશ મેસેજ ટાઇમર
+  Timer? _reminderTimer;
+  final Set<String> _shownFlashIdsThisSession = {};
+  bool _isFlashPopupOpen = false;
 
   int _selectedTabIndex = 0;
   TimeFilter selectedFilter = TimeFilter.monthly;
@@ -175,6 +223,8 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   String bullionLastUpdated = "લાઇવ અપડેટ ચાલુ...";
   double bullionChangePercent = 0.85;
 
+  static const MethodChannel _nativeChannel = MethodChannel('com.example.my_finance_app/native');
+
   final Map<String, double> citySpreadMultiplier = {
     "અમદાવાદ (Ahmedabad)": 1.0000,
     "સુરત (Surat)": 1.0004,
@@ -193,6 +243,18 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     "દિલ્હી (Delhi)": {"gold24": 96635.0, "gold22": 88520.0, "silver": 112150.0},
   };
 
+  // ડાર્ક અને લાઇટ મોડ માટે એડેપ્ટિવ કલર હેલ્પર્સ (ડાર્ક મોડમાં કાળા અક્ષરો ન દેખાય તે માટે)
+  bool get isDark => Theme.of(context).brightness == Brightness.dark;
+  Color get primaryTextColor => isDark ? Colors.white : Colors.black87;
+  Color get secondaryTextColor => isDark ? Colors.white70 : Colors.black54;
+  Color get mutedTextColor => isDark ? Colors.white60 : Colors.grey.shade700;
+
+  Color adaptiveTintBg(MaterialColor color) =>
+      isDark ? color.shade900.withOpacity(0.32) : color.shade50;
+
+  Color adaptiveAccentText(MaterialColor color) =>
+      isDark ? color.shade200 : color.shade900;
+
   @override
   void initState() {
     super.initState();
@@ -205,12 +267,13 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _reminderTimer?.cancel();
     _unlockPasswordCtrl.dispose();
     super.dispose();
   }
 
   // =========================================================
-  // (૨) સુધારેલ બેકગ્રાઉન્ડ ઓટો-લોક (પાસવર્ડ + ફિંગરપ્રિન્ટ સપોર્ટ)
+  // બેકગ્રાઉન્ડ ઓટો-લોક (પાસવર્ડ + ફિંગરપ્રિન્ટ સપોર્ટ)
   // =========================================================
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) async {
@@ -243,6 +306,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           }
         }
       }
+      _checkAndTriggerFlashReminders();
     }
   }
 
@@ -294,17 +358,30 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
 
   // =========================================================
   // (૧) ફોનની ઇન્ટરનલ મેમરીમાં બેકઅપ અને રિસ્ટોર સિસ્ટમ
+  // (PathAccessException errno = 13 નું નિવારણ + દર વખતે અલગ નામથી સેવ)
   // =========================================================
   String get _userPrefix => widget.userEmail.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_');
 
   Future<List<Directory>> _getCandidateBackupDirectories() async {
     final List<Directory> dirs = [];
-    final paths = [
+    // પ્રથમ એપની પોતાની પ્રાઇવેટ ડિરેક્ટરી (જ્યાં ક્યારેય Permission Denied આવતું નથી)
+    if (categoriesBox.path != null) {
+      try {
+        final internalBackupDir = Directory('${File(categoriesBox.path!).parent.path}/MyFinanceApp_Backup');
+        if (!await internalBackupDir.exists()) {
+          await internalBackupDir.create(recursive: true);
+        }
+        if (await internalBackupDir.exists()) dirs.add(internalBackupDir);
+        dirs.add(File(categoriesBox.path!).parent);
+      } catch (_) {}
+    }
+
+    final externalPaths = [
       '/storage/emulated/0/Download/MyFinanceApp_Backup',
       '/storage/emulated/0/Documents/MyFinanceApp_Backup',
       '/storage/emulated/0/Download',
     ];
-    for (final p in paths) {
+    for (final p in externalPaths) {
       try {
         final d = Directory(p);
         if (!await d.exists()) {
@@ -313,80 +390,133 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
         if (await d.exists()) dirs.add(d);
       } catch (_) {}
     }
-    if (categoriesBox.path != null) {
-      final parent = File(categoriesBox.path!).parent;
-      dirs.add(parent);
-    }
     return dirs;
   }
 
-  Future<File?> _findExistingInternalBackupFile() async {
-    final fileName = 'finance_backup_$_userPrefix.json';
+  Future<bool> _canReadFileSafely(File file) async {
+    try {
+      final content = await file.readAsString();
+      return content.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<List<File>> _listAllAvailableBackupFiles() async {
     final dirs = await _getCandidateBackupDirectories();
+    final List<File> availableBackups = [];
+    final Set<String> seenPaths = {};
+
     for (final d in dirs) {
       try {
-        final f = File('${d.path}/$fileName');
-        if (await f.exists()) return f;
-        // જો કોઇ અન્ય બેકઅપ ફાઇલ હોય તો તે પણ તપાસો
-        final entities = d.listSync();
-        for (final e in entities) {
-          if (e is File && e.path.endsWith('.json') && e.path.contains('finance_backup_')) {
-            return e;
+        final list = d.listSync();
+        for (final f in list) {
+          if (f is File &&
+              (f.path.endsWith('.json') || f.path.endsWith('.txt')) &&
+              f.path.contains('finance_backup')) {
+            if (seenPaths.add(f.path)) {
+              availableBackups.add(f);
+            }
           }
         }
       } catch (_) {}
     }
-    return null;
+
+    availableBackups.sort((a, b) {
+      DateTime ma = DateTime.fromMillisecondsSinceEpoch(0);
+      DateTime mb = DateTime.fromMillisecondsSinceEpoch(0);
+      try {
+        ma = a.lastModifiedSync();
+      } catch (_) {}
+      try {
+        mb = b.lastModifiedSync();
+      } catch (_) {}
+      return mb.compareTo(ma);
+    });
+    return availableBackups;
   }
 
-  Future<void> _backupAllDataToInternalMemory({bool showNotification = true}) async {
-    try {
-      final backupPayload = {
-        'version': 2,
-        'userEmail': widget.userEmail,
-        'backupDate': DateTime.now().toIso8601String(),
-        'appTitle': appTitle,
-        'categories': categoriesBox.toMap(),
-        'accounts': accountsBox.toMap(),
-        'transactions': transactionsBox.toMap(),
-        'budgets': budgetBox.toMap(),
-        'autoPay': autoPayBox.toMap(),
-        'physicalAssets': physicalAssetsBox.toMap(),
-        'bullionInvestments': bullionInvestmentsBox.toMap(),
-        'mfInvestments': mfInvestmentsBox.toMap(),
-        'stockInvestments': stockInvestmentsBox.toMap(),
-        'fixedIncome': fixedIncomeBox.toMap(),
-        'capitalGains': capitalGainsBox.toMap(),
-        'settings': {
-          'primaryColor': settingsBox.get('primaryColor'),
-          'isDarkMode': settingsBox.get('isDarkMode'),
-          'customAppTitle': settingsBox.get('customAppTitle'),
-          'customInvTitle': settingsBox.get('customInvTitle'),
-          'autoGenerateCcBill': settingsBox.get('autoGenerateCcBill', defaultValue: false),
-          'inflationRate': settingsBox.get('inflationRate', defaultValue: 6.0),
-        },
-      };
+  Future<File?> _findExistingInternalBackupFile() async {
+    final allFiles = await _listAllAvailableBackupFiles();
+    // પ્રથમ એવી ફાઇલ શોધો જે સીધી વાંચી શકાય છે (Permission Denied વગર)
+    for (final f in allFiles) {
+      if (await _canReadFileSafely(f)) {
+        return f;
+      }
+    }
+    // જો કોઈ ફાઇલ મળી હોય પણ Scoped Storage પરમિશન માંગતી હોય તો પહેલી ફાઇલ પરત કરો
+    return allFiles.isNotEmpty ? allFiles.first : null;
+  }
 
+  Map<String, dynamic> _buildCompleteBackupPayload() {
+    return {
+      'version': 3,
+      'userEmail': widget.userEmail,
+      'backupDate': DateTime.now().toIso8601String(),
+      'appTitle': appTitle,
+      'categories': categoriesBox.toMap(),
+      'accounts': accountsBox.toMap(),
+      'transactions': transactionsBox.toMap(),
+      'budgets': budgetBox.toMap(),
+      'autoPay': autoPayBox.toMap(),
+      'physicalAssets': physicalAssetsBox.toMap(),
+      'bullionInvestments': bullionInvestmentsBox.toMap(),
+      'mfInvestments': mfInvestmentsBox.toMap(),
+      'stockInvestments': stockInvestmentsBox.toMap(),
+      'fixedIncome': fixedIncomeBox.toMap(),
+      'capitalGains': capitalGainsBox.toMap(),
+      'settings': {
+        'primaryColor': settingsBox.get('primaryColor'),
+        'isDarkMode': settingsBox.get('isDarkMode'),
+        'backgroundImage': settingsBox.get('backgroundImage'),
+        'customAppTitle': settingsBox.get('customAppTitle'),
+        'customInvTitle': settingsBox.get('customInvTitle'),
+        'autoGenerateCcBill': settingsBox.get('autoGenerateCcBill', defaultValue: false),
+        'inflationRate': settingsBox.get('inflationRate', defaultValue: 6.0),
+        'customMetalsList': settingsBox.get('customMetalsList'),
+        'lockedRiskStrategy': settingsBox.get('lockedRiskStrategy'),
+        'isRiskStrategyLocked': settingsBox.get('isRiskStrategyLocked'),
+      },
+    };
+  }
+
+  Future<void> _backupAllDataToInternalMemory({
+    bool showNotification = true,
+    String? customFileTag,
+  }) async {
+    try {
+      final backupPayload = _buildCompleteBackupPayload();
       final jsonString = const JsonEncoder.withIndent('  ').convert(backupPayload);
-      final fileName = 'finance_backup_$_userPrefix.json';
-      final timestampedName =
-          'finance_backup_${_userPrefix}_${DateFormat('yyyyMMdd_HHmm').format(DateTime.now())}.json';
+
+      // દર વખતે અલગ-અલગ (Unique) નામથી સેવ થાય જેથી જૂની ફાઇલ ઓવરરાઇટ કરતા errno = 13 ન આવે
+      final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+      final cleanTag = (customFileTag ?? '').trim().replaceAll(RegExp(r'[^a-zA-Z0-9_\u0A80-\u0AFF]'), '_');
+      final uniqueFileName = cleanTag.isNotEmpty
+          ? 'finance_backup_${_userPrefix}_${cleanTag}_$timestamp.json'
+          : 'finance_backup_${_userPrefix}_$timestamp.json';
 
       final dirs = await _getCandidateBackupDirectories();
-      String savedPath = '';
+      final List<String> savedPaths = [];
 
       for (final d in dirs) {
         try {
-          final mainFile = File('${d.path}/$fileName');
-          await mainFile.writeAsString(jsonString, flush: true);
-          final copyFile = File('${d.path}/$timestampedName');
-          await copyFile.writeAsString(jsonString, flush: true);
-          if (savedPath.isEmpty) savedPath = mainFile.path;
+          File targetFile = File('${d.path}/$uniqueFileName');
+          if (await targetFile.exists()) {
+            final ms = DateTime.now().millisecondsSinceEpoch % 10000;
+            targetFile = File('${d.path}/finance_backup_${_userPrefix}_${timestamp}_$ms.json');
+          }
+          await targetFile.writeAsString(jsonString, flush: true);
+          savedPaths.add(targetFile.path);
         } catch (_) {}
       }
 
+      // છેલ્લા બેકઅપની કોપી Hive settingsBox માં પણ સુરક્ષિત રાખો
+      await settingsBox.put('lastBackupJson_$_userPrefix', jsonString);
       await settingsBox.put('lastBackupTime_$_userPrefix', DateTime.now().toIso8601String());
-      await settingsBox.put('lastBackupPath_$_userPrefix', savedPath);
+      final displayPath = savedPaths.isNotEmpty
+          ? savedPaths.firstWhere((p) => p.contains('/storage/emulated/0'), orElse: () => savedPaths.first)
+          : uniqueFileName;
+      await settingsBox.put('lastBackupPath_$_userPrefix', displayPath);
 
       if (showNotification && mounted) {
         showDialog(
@@ -396,14 +526,24 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
               children: [
                 Icon(Icons.check_circle, color: Colors.teal),
                 SizedBox(width: 8),
-                Expanded(child: Text('બેકઅપ સફળતાપૂર્વક સેવ થયો!')),
+                Expanded(child: Text('નવા નામથી બેકઅપ સેવ થયો!')),
               ],
             ),
             content: Text(
-              'તમારી તમામ નોંધો અને રોકાણોનો બેકઅપ ફોનની ઇન્ટરનલ મેમરીમાં સુરક્ષિત રીતે સેવ થઈ ગયો છે:\n\n📂 ફાઇલ પાથ:\n$savedPath\n\nએપ અનઇન્સ્ટોલ થયા પછી ફરી ઇન્સ્ટોલ કરશો ત્યારે આ ફાઇલમાંથી ડેટા આપોઆપ રિસ્ટોર કરી શકાશે.',
+              'તમારો બેકઅપ અલગ નામથી સુરક્ષિત રીતે સેવ થઈ ગયો છે:\n\n📄 ફાઇલનું નામ:\n$uniqueFileName\n\n📂 ફાઇલ પાથ:\n$displayPath',
               style: const TextStyle(fontSize: 13),
             ),
             actions: [
+              TextButton.icon(
+                icon: const Icon(Icons.copy, size: 16),
+                label: const Text('JSON કોપી કરો'),
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: jsonString));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('બેકઅપ ડેટા ક્લિપબોર્ડમાં કોપી થયો!'), backgroundColor: Colors.teal),
+                  );
+                },
+              ),
               ElevatedButton(
                 onPressed: () => Navigator.pop(ctx),
                 child: const Text('સમજાઈ ગયું'),
@@ -421,64 +561,202 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     }
   }
 
-  Future<void> _restoreDataFromBackupFile(File file) async {
+  Future<void> _restoreFromDecodedJsonMap(Map<String, dynamic> data) async {
+    Future<void> restoreBox(Box box, dynamic mapData) async {
+      if (mapData is Map) {
+        await box.clear();
+        for (final entry in mapData.entries) {
+          await box.put(entry.key.toString(), entry.value);
+        }
+      }
+    }
+
+    await restoreBox(categoriesBox, data['categories']);
+    await restoreBox(accountsBox, data['accounts']);
+    await restoreBox(transactionsBox, data['transactions']);
+    await restoreBox(budgetBox, data['budgets']);
+    await restoreBox(autoPayBox, data['autoPay']);
+    await restoreBox(physicalAssetsBox, data['physicalAssets']);
+    await restoreBox(bullionInvestmentsBox, data['bullionInvestments']);
+    await restoreBox(mfInvestmentsBox, data['mfInvestments']);
+    await restoreBox(stockInvestmentsBox, data['stockInvestments']);
+    await restoreBox(fixedIncomeBox, data['fixedIncome']);
+    await restoreBox(capitalGainsBox, data['capitalGains']);
+
+    if (data['settings'] is Map) {
+      final s = data['settings'] as Map;
+      if (s['customAppTitle'] != null) {
+        appTitle = s['customAppTitle'].toString();
+        await settingsBox.put('customAppTitle', appTitle);
+      }
+      if (s['customInvTitle'] != null) {
+        await settingsBox.put('customInvTitle', s['customInvTitle'].toString());
+      }
+      if (s['primaryColor'] is int) {
+        await settingsBox.put('primaryColor', s['primaryColor']);
+        appSeedColor.value = Color(s['primaryColor'] as int);
+      }
+      if (s['isDarkMode'] is bool) {
+        await settingsBox.put('isDarkMode', s['isDarkMode']);
+        appThemeMode.value = (s['isDarkMode'] == true) ? ThemeMode.dark : ThemeMode.light;
+      }
+      if (s['autoGenerateCcBill'] != null) {
+        await settingsBox.put('autoGenerateCcBill', s['autoGenerateCcBill']);
+      }
+      if (s['inflationRate'] != null) {
+        benchmarkInflationRate = (s['inflationRate'] as num).toDouble();
+        await settingsBox.put('inflationRate', benchmarkInflationRate);
+      }
+      if (s['customMetalsList'] != null) {
+        await settingsBox.put('customMetalsList', s['customMetalsList']);
+      }
+      if (s['lockedRiskStrategy'] != null) {
+        await settingsBox.put('lockedRiskStrategy', s['lockedRiskStrategy']);
+      }
+      if (s['isRiskStrategyLocked'] != null) {
+        await settingsBox.put('isRiskStrategyLocked', s['isRiskStrategyLocked']);
+      }
+    }
+
+    if (categoriesBox.isEmpty) _saveDefaultCategories();
+    if (accountsBox.isEmpty) _saveDefaultAccounts();
+
+    if (mounted) {
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('✅ બેકઅપમાંથી તમામ ડેટા સફળતાપૂર્વક રિસ્ટોર થઈ ગયો!'),
+          backgroundColor: Colors.teal,
+        ),
+      );
+    }
+  }
+
+  Future<void> _requestAllFilesAccessPermission() async {
     try {
-      final content = await file.readAsString();
-      final Map<String, dynamic> data = json.decode(content);
-
-      Future<void> restoreBox(Box box, dynamic mapData) async {
-        if (mapData is Map) {
-          await box.clear();
-          for (final entry in mapData.entries) {
-            await box.put(entry.key.toString(), entry.value);
-          }
-        }
-      }
-
-      await restoreBox(categoriesBox, data['categories']);
-      await restoreBox(accountsBox, data['accounts']);
-      await restoreBox(transactionsBox, data['transactions']);
-      await restoreBox(budgetBox, data['budgets']);
-      await restoreBox(autoPayBox, data['autoPay']);
-      await restoreBox(physicalAssetsBox, data['physicalAssets']);
-      await restoreBox(bullionInvestmentsBox, data['bullionInvestments']);
-      await restoreBox(mfInvestmentsBox, data['mfInvestments']);
-      await restoreBox(stockInvestmentsBox, data['stockInvestments']);
-      await restoreBox(fixedIncomeBox, data['fixedIncome']);
-      await restoreBox(capitalGainsBox, data['capitalGains']);
-
-      if (data['settings'] is Map) {
-        final s = data['settings'] as Map;
-        if (s['customAppTitle'] != null) {
-          appTitle = s['customAppTitle'].toString();
-          await settingsBox.put('customAppTitle', appTitle);
-        }
-        if (s['autoGenerateCcBill'] != null) {
-          await settingsBox.put('autoGenerateCcBill', s['autoGenerateCcBill']);
-        }
-        if (s['inflationRate'] != null) {
-          benchmarkInflationRate = (s['inflationRate'] as num).toDouble();
-          await settingsBox.put('inflationRate', benchmarkInflationRate);
-        }
-      }
-
-      if (categoriesBox.isEmpty) _saveDefaultCategories();
-      if (accountsBox.isEmpty) _saveDefaultAccounts();
-
+      await _nativeChannel.invokeMethod('requestAllFilesAccess');
+    } catch (_) {
       if (mounted) {
-        setState(() {});
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('✅ બેકઅપમાંથી તમામ ડેટા સફળતાપૂર્વક રિસ્ટોર થઈ ગયો!'),
-            backgroundColor: Colors.teal,
+            content: Text('ફોનના Settings -> Apps -> My Finance App -> Permissions -> Files and Media (All Files) ચાલુ કરો.'),
+            duration: Duration(seconds: 5),
           ),
         );
       }
+    }
+  }
+
+  void _openPasteBackupJsonDialog({String? failedFilePath}) {
+    final pasteCtrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.restore_page, color: Colors.teal),
+            SizedBox(width: 8),
+            Expanded(child: Text('બેકઅપ ફાઇલ પરમિશન / મેન્યુઅલ રિસ્ટોર', style: TextStyle(fontSize: 15))),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (failedFilePath != null) ...[
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.orange),
+                  ),
+                  child: Text(
+                    '⚠️ Android 11+ સુરક્ષા નિયમ (errno = 13) ને કારણે અગાઉના ઇન્સ્ટોલેશનની ફાઇલ સીધી ખોલવા માટે "All Files Access" પરમિશન આપવી પડે છે, અથવા તમે ફાઇલ મેનેજરમાંથી બેકઅપ ફાઇલનું લખાણ (JSON) અહીં પેસ્ટ કરીને તરત રિસ્ટોર કરી શકો છો.\n\nફાઇલ: ${failedFilePath.split('/').last}',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.folder_open, color: Colors.teal),
+                    label: const Text('૧. સ્ટોરેજ પરમિશન (All Files Access) ચાલુ કરો'),
+                    onPressed: () {
+                      _requestAllFilesAccessPermission();
+                    },
+                  ),
+                ),
+                const SizedBox(height: 10),
+              ],
+              const Text('અથવા બેકઅપ JSON ટેક્સ્ટ અહીં પેસ્ટ કરો:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: pasteCtrl,
+                maxLines: 5,
+                decoration: const InputDecoration(
+                  hintText: '{"version": 3, "userEmail": ...}',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ')),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
+            icon: const Icon(Icons.check),
+            label: const Text('રિસ્ટોર કરો'),
+            onPressed: () async {
+              final raw = pasteCtrl.text.trim();
+              if (raw.isEmpty) return;
+              try {
+                final decoded = json.decode(raw) as Map<String, dynamic>;
+                Navigator.pop(ctx);
+                await _restoreFromDecodedJsonMap(decoded);
+              } catch (e) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('JSON ફોર્મેટ ખોટું છે: $e'), backgroundColor: Colors.red),
+                );
+              }
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _restoreDataFromBackupFile(File file) async {
+    try {
+      String? content;
+      try {
+        content = await file.readAsString();
+      } on FileSystemException catch (_) {
+        // જો અગાઉના ઇન્સ્ટોલેશનની ફાઇલ પર errno = 13 (Permission denied) આવે, તો અન્ય વાંચી શકાય તેવી ફાઇલ અથવા કેશ તપાસો
+        final allFiles = await _listAllAvailableBackupFiles();
+        for (final altFile in allFiles) {
+          if (altFile.path != file.path && await _canReadFileSafely(altFile)) {
+            content = await altFile.readAsString();
+            break;
+          }
+        }
+        content ??= settingsBox.get('lastBackupJson_$_userPrefix')?.toString();
+      }
+
+      if (content == null || content.trim().isEmpty) {
+        if (mounted) {
+          _openPasteBackupJsonDialog(failedFilePath: file.path);
+        }
+        return;
+      }
+
+      final Map<String, dynamic> data = json.decode(content) as Map<String, dynamic>;
+      await _restoreFromDecodedJsonMap(data);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('રિસ્ટોર કરવામાં ભૂલ: $e'), backgroundColor: Colors.red),
-        );
+        _openPasteBackupJsonDialog(failedFilePath: file.path);
       }
     }
   }
@@ -494,8 +772,12 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       final backupFile = await _findExistingInternalBackupFile();
       if (backupFile != null && mounted) {
         await settingsBox.put('reinstallRestorePrompted_$_userPrefix', true);
-        final stat = await backupFile.stat();
-        final dateStr = DateFormat('dd/MM/yyyy hh:mm a').format(stat.modified);
+        DateTime modifiedDate = DateTime.now();
+        try {
+          final stat = await backupFile.stat();
+          modifiedDate = stat.modified;
+        } catch (_) {}
+        final dateStr = DateFormat('dd/MM/yyyy hh:mm a').format(modifiedDate);
 
         if (!mounted) return;
         showDialog(
@@ -535,25 +817,14 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   }
 
   Future<void> _openBackupAndRestoreDialog() async {
-    final dirs = await _getCandidateBackupDirectories();
-    final List<File> availableBackups = [];
-    final Set<String> seenPaths = {};
-
-    for (final d in dirs) {
-      try {
-        final list = d.listSync();
-        for (final f in list) {
-          if (f is File && f.path.endsWith('.json') && f.path.contains('finance_backup')) {
-            if (seenPaths.add(f.path)) {
-              availableBackups.add(f);
-            }
-          }
-        }
-      } catch (_) {}
+    final availableBackups = await _listAllAvailableBackupFiles();
+    final Map<String, bool> readableMap = {};
+    for (final f in availableBackups) {
+      readableMap[f.path] = await _canReadFileSafely(f);
     }
 
-    availableBackups.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
     final lastBackupTime = settingsBox.get('lastBackupTime_$_userPrefix');
+    final customNameCtrl = TextEditingController();
 
     if (!mounted) return;
     showModalBottomSheet(
@@ -561,7 +832,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 20, 16, 28),
+        padding: EdgeInsets.fromLTRB(16, 20, 16, MediaQuery.of(ctx).viewInsets.bottom + 28),
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -571,76 +842,147 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                 children: [
                   Icon(Icons.backup, color: Colors.teal, size: 26),
                   SizedBox(width: 10),
-                  Text('ઇન્ટરનલ મેમરી બેકઅપ અને રિસ્ટોર', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+                  Expanded(
+                    child: Text(
+                      'ઇન્ટરનલ મેમરી બેકઅપ અને રિસ્ટોર',
+                      style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                    ),
+                  ),
                 ],
               ),
               if (lastBackupTime != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 4),
                   child: Text(
-                    'છેલ્લો બેકઅપ: ${DateFormat('dd MMM yyyy, hh:mm a').format(DateTime.parse(lastBackupTime))}',
+                    'છેલ્લો બેકઅપ: ${DateFormat('dd MMM yyyy, hh:mm:ss a').format(DateTime.parse(lastBackupTime))}',
                     style: const TextStyle(fontSize: 12, color: Colors.teal),
                   ),
                 ),
-              const Divider(height: 22),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.teal,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 13),
-                  ),
-                  icon: const Icon(Icons.save_alt),
-                  label: const Text('અત્યારે ફોનની ઇન્ટરનલ મેમરીમાં બેકઅપ લો', style: TextStyle(fontWeight: FontWeight.bold)),
-                  onPressed: () async {
-                    Navigator.pop(ctx);
-                    await _backupAllDataToInternalMemory(showNotification: true);
-                  },
+              const Divider(height: 20),
+              TextField(
+                controller: customNameCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'બેકઅપ ફાઇલનું નામ / નોંધ (વૈકલ્પિક - દર વખતે તારીખ-સમય સાથે અલગ સેવ થશે)',
+                  hintText: 'દા.ત. Nov_2026 અથવા Diwali_Backup',
+                  isDense: true,
+                  border: OutlineInputBorder(),
                 ),
               ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.teal,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      icon: const Icon(Icons.save_alt),
+                      label: const Text('નવા નામથી બેકઅપ સેવ કરો', style: TextStyle(fontWeight: FontWeight.bold)),
+                      onPressed: () async {
+                        final tag = customNameCtrl.text.trim();
+                        Navigator.pop(ctx);
+                        await _backupAllDataToInternalMemory(showNotification: true, customFileTag: tag);
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.paste, size: 16),
+                    label: const Text('JSON પેસ્ટ', style: TextStyle(fontSize: 12)),
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      _openPasteBackupJsonDialog();
+                    },
+                  ),
+                ],
+              ),
               const SizedBox(height: 16),
-              const Text('ઉપલબ્ધ બેકઅપ ફાઇલો (રિસ્ટોર કરવા માટે પસંદ કરો):', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+              const Text(
+                'ઉપલબ્ધ તમામ બેકઅપ ફાઇલો (દરેક ફાઇલ અલગ નામથી સેવ થયેલ છે):',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5),
+              ),
               const SizedBox(height: 8),
               if (availableBackups.isEmpty)
                 const Padding(
                   padding: EdgeInsets.all(16.0),
-                  child: Center(child: Text('હાલમાં ઇન્ટરનલ મેમરીમાં કોઈ બેકઅપ ફાઇલ મળી નથી.', style: TextStyle(color: Colors.grey))),
+                  child: Center(
+                    child: Text(
+                      'હાલમાં ઇન્ટરનલ મેમરીમાં કોઈ બેકઅપ ફાઇલ મળી નથી.',
+                      style: TextStyle(color: Colors.grey),
+                    ),
+                  ),
                 )
               else
-                ...availableBackups.take(8).map((f) {
-                  final modified = f.lastModifiedSync();
+                ...availableBackups.take(15).map((f) {
+                  DateTime modified = DateTime.now();
+                  try {
+                    modified = f.lastModifiedSync();
+                  } catch (_) {}
+                  final bool isReadable = readableMap[f.path] ?? false;
+
                   return Card(
                     margin: const EdgeInsets.symmetric(vertical: 4),
                     child: ListTile(
                       dense: true,
-                      leading: const Icon(Icons.description, color: Colors.teal),
-                      title: Text(f.path.split('/').last, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
-                      subtitle: Text('તારીખ: ${DateFormat('dd/MM/yyyy hh:mm a').format(modified)}\n${f.parent.path}', style: const TextStyle(fontSize: 11)),
-                      trailing: ElevatedButton(
-                        style: ElevatedButton.styleFrom(backgroundColor: Colors.orange.shade800, foregroundColor: Colors.white),
-                        onPressed: () {
-                          showDialog(
-                            context: context,
-                            builder: (confirmCtx) => AlertDialog(
-                              title: const Text('ડેટા રિસ્ટોર કન્ફર્મ કરો'),
-                              content: const Text('શું તમે ખરેખર આ બેકઅપ ફાઇલમાંથી ડેટા રિસ્ટોર કરવા માંગો છો?'),
-                              actions: [
-                                TextButton(onPressed: () => Navigator.pop(confirmCtx), child: const Text('રદ')),
-                                ElevatedButton(
-                                  style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
-                                  onPressed: () async {
-                                    Navigator.pop(confirmCtx);
-                                    Navigator.pop(ctx);
-                                    await _restoreDataFromBackupFile(f);
-                                  },
-                                  child: const Text('હા, રિસ્ટોર કરો'),
-                                ),
-                              ],
+                      leading: Icon(
+                        isReadable ? Icons.description : Icons.lock_person,
+                        color: isReadable ? Colors.teal : Colors.orange,
+                      ),
+                      title: Text(
+                        f.path.split('/').last,
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                      ),
+                      subtitle: Text(
+                        'તારીખ: ${DateFormat('dd/MM/yyyy hh:mm:ss a').format(modified)}\n${f.parent.path}${isReadable ? '' : '\n⚠️ જૂના ઇન્સ્ટોલની ફાઇલ (પરમિશન/પેસ્ટ જરૂરી)'}',
+                        style: const TextStyle(fontSize: 10.5),
+                      ),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.orange.shade800,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 10),
                             ),
-                          );
-                        },
-                        child: const Text('રિસ્ટોર', style: TextStyle(fontSize: 11)),
+                            onPressed: () {
+                              showDialog(
+                                context: context,
+                                builder: (confirmCtx) => AlertDialog(
+                                  title: const Text('ડેટા રિસ્ટોર કન્ફર્મ કરો'),
+                                  content: Text(
+                                    'શું તમે "${f.path.split('/').last}" ફાઇલમાંથી ડેટા રિસ્ટોર કરવા માંગો છો?',
+                                  ),
+                                  actions: [
+                                    TextButton(onPressed: () => Navigator.pop(confirmCtx), child: const Text('રદ')),
+                                    ElevatedButton(
+                                      style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
+                                      onPressed: () async {
+                                        Navigator.pop(confirmCtx);
+                                        Navigator.pop(ctx);
+                                        await _restoreDataFromBackupFile(f);
+                                      },
+                                      child: const Text('હા, રિસ્ટોર કરો'),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                            child: const Text('રિસ્ટોર', style: TextStyle(fontSize: 11)),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.delete_outline, color: Colors.red, size: 18),
+                            onPressed: () async {
+                              try {
+                                await f.delete();
+                              } catch (_) {}
+                              if (ctx.mounted) Navigator.pop(ctx);
+                              _openBackupAndRestoreDialog();
+                            },
+                          ),
+                        ],
                       ),
                     ),
                   );
@@ -652,9 +994,40 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     );
   }
 
+
   // =========================================================
-  // કિંમતી ધાતુઓના ૧૦૦% લાઇવ બજાર ભાવ (Multi-API Fallback)
+  // કિંમતી ધાતુઓના ૧૦૦% લાઇવ બજાર ભાવ + કસ્ટમ ધાતુઓ સપોર્ટ
   // =========================================================
+  List<Map<String, dynamic>> get customMetals {
+    final raw = settingsBox.get('customMetalsList');
+    if (raw is List) {
+      return raw.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    }
+    return [
+      {'name': 'સોનું 18K (Gold 18K)', 'ratePerGram': 7230.0},
+      {'name': 'પ્લેટિનમ (Platinum)', 'ratePerGram': 3450.0},
+    ];
+  }
+
+  double _getMetalLiveRatePerGram(String metalType) {
+    final rates = bullionCityRates[selectedCity] ?? {"gold24": 96500.0, "gold22": 88400.0, "silver": 112000.0};
+    if (metalType.contains('24K')) {
+      return rates['gold24']! / 10.0;
+    } else if (metalType.contains('22K')) {
+      return rates['gold22']! / 10.0;
+    } else if (metalType.contains('18K')) {
+      return (rates['gold24']! * 0.75) / 10.0;
+    } else if (metalType.contains('Silver') || metalType.contains('ચાંદી')) {
+      return rates['silver']! / 1000.0;
+    }
+    for (final cm in customMetals) {
+      if (cm['name'].toString() == metalType) {
+        return (cm['ratePerGram'] as num?)?.toDouble() ?? 1000.0;
+      }
+    }
+    return rates['gold24']! / 10.0;
+  }
+
   void _applyBaseBullionRatesToAllCities(double baseGold24Per10g, double baseSilverPer1Kg) {
     for (final entry in citySpreadMultiplier.entries) {
       final city = entry.key;
@@ -823,11 +1196,13 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
 
     _processAutoPayAndSIP();
     _processFixedIncomeSchedules();
+    _startReminderCheckTimer();
 
     if (mounted) {
       setState(() => _isInitialized = true);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _checkAndPromptBackupRestoreOnFreshInstall();
+        _checkAndTriggerFlashReminders();
       });
     }
   }
@@ -849,11 +1224,61 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
 
   void _saveDefaultAccounts() {
     final defaultAccs = [
-      {'id': 'acc_1', 'name': 'રોકડ સિલક (Cash Wallet)', 'type': 'રોકડ (Cash Wallet)', 'openingBalance': 10000.0},
-      {'id': 'acc_2', 'name': 'સેવિંગ્સ બેંક એકાઉન્ટ', 'type': 'સેવિંગ્સ એકાઉન્ટ (Savings A/C)', 'openingBalance': 50000.0},
-      {'id': 'acc_3', 'name': 'સેલેરી બેંક એકાઉન્ટ', 'type': 'સેલેરી એકાઉન્ટ (Salary A/C)', 'openingBalance': 0.0},
-      {'id': 'acc_4', 'name': 'ક્રેડિટ કાર્ડ (Credit Card)', 'type': 'ક્રેડિટ કાર્ડ (Credit Card)', 'openingBalance': 0.0},
-      {'id': 'acc_5', 'name': 'ડીમેટ / ટ્રેડિંગ એકાઉન્ટ', 'type': 'ડીમેટ / ટ્રેડિંગ એકાઉન્ટ (Demat A/C)', 'openingBalance': 0.0},
+      {
+        'id': 'acc_1',
+        'name': 'રોકડ સિલક (Cash Wallet)',
+        'type': 'રોકડ (Cash Wallet)',
+        'accountCategory': 'Cash',
+        'bankName': '',
+        'branchName': '',
+        'accountSubType': 'રોકડ ખાતું',
+        'interestRate': 0.0,
+        'openingBalance': 10000.0,
+      },
+      {
+        'id': 'acc_2',
+        'name': 'સેવિંગ્સ બેંક એકાઉન્ટ',
+        'type': 'સેવિંગ એકાઉન્ટ (Savings A/C)',
+        'accountCategory': 'Bank',
+        'bankName': 'State Bank of India',
+        'branchName': 'મેઈન બ્રાન્ચ',
+        'accountSubType': 'સેવિંગ એકાઉન્ટ (Savings A/C)',
+        'interestRate': 3.5,
+        'openingBalance': 50000.0,
+      },
+      {
+        'id': 'acc_3',
+        'name': 'સેલેરી બેંક એકાઉન્ટ',
+        'type': 'સેલેરી એકાઉન્ટ (Salary A/C)',
+        'accountCategory': 'Bank',
+        'bankName': 'HDFC Bank',
+        'branchName': 'સિટી બ્રાન્ચ',
+        'accountSubType': 'સેલેરી એકાઉન્ટ (Salary A/C)',
+        'interestRate': 3.5,
+        'openingBalance': 0.0,
+      },
+      {
+        'id': 'acc_4',
+        'name': 'ક્રેડિટ કાર્ડ (Credit Card)',
+        'type': 'ક્રેડિટ કાર્ડ (Credit Card)',
+        'accountCategory': 'CreditCard',
+        'issuerName': 'HDFC Bank',
+        'cardType': 'Visa Platinum',
+        'maxLimit': 100000.0,
+        'warningLimit': 75000.0,
+        'openingBalance': 0.0,
+      },
+      {
+        'id': 'acc_5',
+        'name': 'ડીમેટ / ટ્રેડિંગ એકાઉન્ટ',
+        'type': 'ડીમેટ / ટ્રેડિંગ એકાઉન્ટ (Demat A/C)',
+        'accountCategory': 'Demat',
+        'bankName': 'Zerodha / Groww',
+        'branchName': 'ઓનલાઇન',
+        'accountSubType': 'ડીમેટ એકાઉન્ટ',
+        'interestRate': 0.0,
+        'openingBalance': 0.0,
+      },
     ];
     for (var acc in defaultAccs) {
       accountsBox.put(acc['id'], acc);
@@ -865,6 +1290,251 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
 
   List<DataMap> get accounts =>
       accountsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
+
+  // =========================================================
+  // ક્રેડિટ કાર્ડ લિમિટ અને ઓવર-સ્પેન્ડ વોર્નિંગ સિસ્ટમ
+  // =========================================================
+  bool _isCreditCardAccount(Map<dynamic, dynamic> acc) {
+    final cat = (acc['accountCategory'] ?? '').toString().toLowerCase();
+    final t = (acc['type'] ?? '').toString().toLowerCase();
+    return cat == 'creditcard' || t.contains('credit') || t.contains('ક્રેડિટ');
+  }
+
+  double getCreditCardUsedAmount(String ccAccountId) {
+    final acc = accounts.firstWhere((a) => a['id'].toString() == ccAccountId, orElse: () => {});
+    double used = (acc['openingBalance'] as num?)?.toDouble() ?? 0.0;
+    final allTx = transactionsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
+    for (var tx in allTx) {
+      if (tx['accountId'] == ccAccountId) {
+        final amt = (tx['amount'] as num).toDouble();
+        final effect = tx['categoryEffect'];
+        if (effect == 'expenseDebit' || effect == 'loanRepay' || effect == 'assetIncrease') {
+          used += amt;
+        } else if (effect == 'incomeCredit') {
+          used = math.max(0.0, used - amt);
+        }
+      }
+    }
+    return used;
+  }
+
+  void _checkAndShowCreditCardLimitWarning(String accountId) {
+    final acc = accounts.firstWhere((a) => a['id'].toString() == accountId, orElse: () => {});
+    if (acc.isEmpty || !_isCreditCardAccount(acc)) return;
+
+    final double maxLimit = (acc['maxLimit'] as num?)?.toDouble() ?? 0.0;
+    final double warningLimit = (acc['warningLimit'] as num?)?.toDouble() ?? (maxLimit > 0 ? maxLimit * 0.8 : 0.0);
+    if (maxLimit <= 0 && warningLimit <= 0) return;
+
+    final double currentUsed = getCreditCardUsedAmount(accountId);
+    final bool overMax = maxLimit > 0 && currentUsed >= maxLimit;
+    final bool overWarn = warningLimit > 0 && currentUsed >= warningLimit;
+
+    if ((overMax || overWarn) && mounted) {
+      HapticFeedback.heavyImpact();
+      SystemSound.play(SystemSoundType.alert);
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: isDark ? const Color(0xFF2C1515) : Colors.red.shade50,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: Colors.red.shade700, width: 2),
+          ),
+          title: Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.red.shade700, size: 30),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  overMax ? '🚨 ક્રેડિટ કાર્ડ મહત્તમ લિમિટ પૂર્ણ!' : '⚠️ ક્રેડિટ કાર્ડ ખર્ચ વોર્નિંગ!',
+                  style: TextStyle(color: Colors.red.shade700, fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+              ),
+            ],
+          ),
+          content: Text(
+            'તમારા ક્રેડિટ કાર્ડ "${acc['name']}" (${acc['issuerName'] ?? ''}) માં કુલ વપરાશ ₹${currentUsed.toStringAsFixed(0)} થયો છે!\n\n'
+            '• વોર્નિંગ લિમિટ: ₹${warningLimit.toStringAsFixed(0)}\n'
+            '• મહત્તમ કાર્ડ લિમિટ: ₹${maxLimit.toStringAsFixed(0)}\n\n'
+            '${overMax ? 'તમારો ખર્ચ કાર્ડની મહત્તમ લિમિટ કરતાં વધી ગયો છે!' : 'તમારો ખર્ચ નિર્ધારિત વોર્નિંગ લિમિટ કરતાં વધી ગયો છે. કૃપા કરીને ખર્ચ પર નિયંત્રણ રાખો.'}',
+            style: TextStyle(fontSize: 13.5, color: primaryTextColor),
+          ),
+          actions: [
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade700, foregroundColor: Colors.white),
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('સમજાઈ ગયું'),
+            ),
+          ],
+        ),
+      );
+    }
+  }
+
+  // =========================================================
+  // ઓટો-પે / SIP માટે રીમાઇન્ડર સમય, રીંગટોન અને મોબાઇલ ફ્લેશ મેસેજ એન્જિન
+  // =========================================================
+  void _startReminderCheckTimer() {
+    _reminderTimer?.cancel();
+    _reminderTimer = Timer.periodic(const Duration(seconds: 25), (_) {
+      _checkAndTriggerFlashReminders();
+    });
+  }
+
+  Future<void> _playSelectedRingtone(String ringtoneName) async {
+    try {
+      await _nativeChannel.invokeMethod('playRingtone', {'ringtone': ringtoneName});
+      return;
+    } catch (_) {}
+
+    // Pure Flutter fallback ringtone & vibration pattern
+    int count = 3;
+    if (ringtoneName.contains('ઇમરજન્સી') || ringtoneName.contains('Urgent')) {
+      count = 5;
+    } else if (ringtoneName.contains('સોફ્ટ') || ringtoneName.contains('Soft')) {
+      count = 1;
+    }
+    for (int i = 0; i < count; i++) {
+      await SystemSound.play(SystemSoundType.alert);
+      await HapticFeedback.heavyImpact();
+      await Future.delayed(const Duration(milliseconds: 350));
+    }
+  }
+
+  void _checkAndTriggerFlashReminders() {
+    if (!mounted || _isAppLocked || _isFlashPopupOpen) return;
+    final now = DateTime.now();
+    final currentMonthKey = "${now.year}-${now.month}";
+    final allAuto = autoPayBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
+
+    for (final item in allAuto) {
+      if (item['isActive'] != true) continue;
+      if (item['lastProcessed'] == currentMonthKey) continue;
+
+      final String id = item['id'].toString();
+      if (_shownFlashIdsThisSession.contains(id)) continue;
+
+      final bool enableFlash = item['enableFlashMessage'] ?? true;
+      if (!enableFlash) continue;
+
+      final int dueDay = (item['day'] as num?)?.toInt() ?? 1;
+      final int remHour = (item['reminderHour'] as num?)?.toInt() ?? 9;
+      final int remMin = (item['reminderMinute'] as num?)?.toInt() ?? 0;
+
+      bool isDateMatch = (now.day == dueDay);
+      if (item['specificReminderDate'] != null) {
+        final sp = DateTime.tryParse(item['specificReminderDate'].toString());
+        if (sp != null && sp.year == now.year && sp.month == now.month && sp.day == now.day) {
+          isDateMatch = true;
+        }
+      }
+
+      if (isDateMatch) {
+        final scheduledToday = DateTime(now.year, now.month, now.day, remHour, remMin);
+        if (!now.isBefore(scheduledToday)) {
+          _shownFlashIdsThisSession.add(id);
+          _showFlashReminderPopup(item);
+          break;
+        }
+      }
+    }
+  }
+
+  void _showFlashReminderPopup(Map<dynamic, dynamic> item) {
+    if (!mounted) return;
+    _isFlashPopupOpen = true;
+    final String ringtone = (item['ringtoneName'] ?? 'ડિફોલ્ટ અલાર્મ ટોન (Default Alarm)').toString();
+    _playSelectedRingtone(ringtone);
+
+    final int h = (item['reminderHour'] as num?)?.toInt() ?? 9;
+    final int m = (item['reminderMinute'] as num?)?.toInt() ?? 0;
+    final timeFormatted = TimeOfDay(hour: h, minute: m).format(context);
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          side: const BorderSide(color: Colors.amber, width: 2.5),
+        ),
+        titlePadding: EdgeInsets.zero,
+        title: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [Colors.teal.shade800, Colors.amber.shade800],
+            ),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.flash_on, color: Colors.yellowAccent, size: 28),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      '⚡ મોબાઇલ ફ્લેશ મેસેજ રીમાઇન્ડર!',
+                      style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                    ),
+                    Text(
+                      'સમય: $timeFormatted • ટોન: $ringtone',
+                      style: const TextStyle(color: Colors.white70, fontSize: 11),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '${item['type']}: ${item['toTarget']}',
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'ચૂકવવાની / રોકાણ રકમ: ₹${((item['amount'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(0)}',
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.teal),
+            ),
+            const SizedBox(height: 4),
+            Text('નિર્ધારિત તારીખ: દર મહિનાની ${item['day']} તારીખ'),
+            const SizedBox(height: 10),
+            const Text(
+              'શું તમે આ ઓટો-પે / SIP વ્યવહાર અત્યારે ખાતામાં નોંધવા માંગો છો?',
+              style: TextStyle(fontSize: 12.5),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton.icon(
+            icon: const Icon(Icons.snooze, size: 16),
+            label: const Text('પછી યાદ અપાવો'),
+            onPressed: () {
+              _isFlashPopupOpen = false;
+              Navigator.pop(ctx);
+            },
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
+            icon: const Icon(Icons.check_circle, size: 16),
+            label: const Text('અત્યારે જ ચૂકવો / નોંધો'),
+            onPressed: () {
+              _isFlashPopupOpen = false;
+              Navigator.pop(ctx);
+              _confirmAndExecuteManualReminder(item);
+            },
+          ),
+        ],
+      ),
+    ).then((_) => _isFlashPopupOpen = false);
+  }
 
   // =========================================================
   // (૩) EMI, SIP, વીમા પ્રીમિયમ અને દૈનિક નોંધમાંથી વૈકલ્પિક ઓટો ક્રેડિટ કાર્ડ બિલ જનરેશન
@@ -911,7 +1581,6 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       final int day = item['day'] ?? 1;
       final int billingDay = item['billingDay'] ?? day;
 
-      // જો ક્રેડિટ કાર્ડ હોય અને વૈકલ્પિક ઓટો-બિલ જનરેશન ON હોય તો દૈનિક વ્યવહારમાંથી બિલની રકમ ગણો
       if (type == 'CreditCard' && (item['autoGenerateFromDaily'] == true || isAutoCcBillEnabled)) {
         final String ccAccId = item['ccAccountId'] ?? '';
         if (ccAccId.isNotEmpty && now.day >= billingDay && item['lastBilledCycle'] != currentMonthKey) {
@@ -974,7 +1643,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     }
   }
 
-  // (૫) બોન્ડ, FD, PLI ની સેટ કરેલ તારીખ પ્રમાણે આપોઆપ ખાતામાં જમા/ઉધાર એડજસ્ટમેન્ટ
+  // બોન્ડ, FD, PLI ની સેટ કરેલ મેચ્યુરિટી તારીખ પ્રમાણે આપોઆપ ખાતામાં વ્યાજ સહિત રકમ જમા/ઉધાર
   void _processFixedIncomeSchedules() {
     final now = DateTime.now();
     final todayDateOnly = DateTime(now.year, now.month, now.day);
@@ -989,7 +1658,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
 
       final scheduledDayOnly = DateTime(targetDate.year, targetDate.month, targetDate.day);
       if (!todayDateOnly.isBefore(scheduledDayOnly)) {
-        final String flowType = item['flowType'] ?? 'inflow_maturity'; // inflow_maturity OR outflow_installment
+        final String flowType = item['flowType'] ?? 'inflow_maturity';
         final double amount = (item['scheduledAmount'] as num?)?.toDouble() ?? 0.0;
         final String accId = item['accountId'] ?? '';
         final acc = accounts.firstWhere((a) => a['id'].toString() == accId, orElse: () => {'name': 'બેંક ખાતું'});
@@ -997,12 +1666,14 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
         if (amount > 0 && accId.isNotEmpty) {
           final txId = "fi_auto_${DateTime.now().millisecondsSinceEpoch}_${item['id']}";
           final isCredit = flowType == 'inflow_maturity';
+          final String bankOrIssuer = (item['issuerBankName'] ?? '').toString();
+          final String issuerLabel = bankOrIssuer.isNotEmpty ? ' ($bankOrIssuer)' : '';
 
           transactionsBox.put(txId, {
             'id': txId,
             'title': isCredit
-                ? "${item['schemeType']} પાકતી રકમ/વ્યાજ જમા: ${item['title']}"
-                : "${item['schemeType']} હપ્તો/રોકાણ ચુકવણી: ${item['title']}",
+                ? "${item['schemeType']}$issuerLabel પાકતી રકમ જમા: ${item['title']}"
+                : "${item['schemeType']}$issuerLabel હપ્તો/રોકાણ ચુકવણી: ${item['title']}",
             'amount': amount,
             'date': scheduledDayOnly.toIso8601String(),
             'categoryId': isCredit ? '2' : '7',
@@ -1201,8 +1872,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   }
 
   // =========================================================
-  // (નવું) ફોટો ૪ (New Regime FY 2026-27) અને ફોટો ૫ (Old Regime) મુજબ ટેક્સ ગણતરી
-  // તથા આખી એપમાંથી આવક, રોકાણ, બચત, રિસ્ક અને સ્ટ્રેટેજી ફેચિંગ એન્જિન
+  // ટેક્સ ગણતરી અને આખી એપમાંથી આવક, રોકાણ, બચત, રિસ્ક અને સ્ટ્રેટેજી ફેચિંગ એન્જિન
   // =========================================================
   String _classifyMfSubCategory(Map<dynamic, dynamic> mf) {
     final savedCat = (mf['mfSubCategory'] ?? '').toString().trim();
@@ -1233,9 +1903,6 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     return 'Equity';
   }
 
-  // ફોટો ૪ મુજબ: New Tax Regime Slabs (FY 2026-27)
-  // 0-4L: 0%, 4-8L: 5%, 8-12L: 10%, 12-16L: 15%, 16-20L: 20%, 20-24L: 25%, >24L: 30%
-  // Standard Deduction: ₹75,000 | Section 87A Rebate: Taxable Income <= ₹12,00,000 પર ₹0 ટેક્સ (માર્જિનલ રિલીફ સહિત)
   double _calculateIncomeTaxNewRegime(double taxableIncome) {
     if (taxableIncome <= 1200000) return 0.0;
     double tax = 0.0;
@@ -1257,18 +1924,13 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     if (taxableIncome > 2400000) {
       tax += (taxableIncome - 2400000) * 0.30;
     }
-    // માર્જિનલ રિલીફ: ₹12,00,000 કરતાં વધારાની આવક કરતાં બેઝ ટેક્સ વધુ ન હોવો જોઈએ
     final double excessOver12L = taxableIncome - 1200000.0;
     if (tax > excessOver12L) {
       tax = excessOver12L;
     }
-    return tax * 1.04; // 4% Health & Education Cess
+    return tax * 1.04;
   }
 
-  // ફોટો ૫ મુજબ: Old Tax Regime Slabs
-  // સામાન્ય (<60 વર્ષ): ₹2,50,000 સુધી 0% | સિનિયર (60-80 વર્ષ): ₹3,00,000 સુધી 0% | સુપર સિનિયર (80+ વર્ષ): ₹5,00,000 સુધી 0%
-  // ₹5,00,000 સુધી 5% | ₹5,00,001 થી ₹10,00,000: 20% | ₹10,00,000 થી વધુ: 30%
-  // Standard Deduction: ₹50,000 | Section 87A Rebate: કરપાત્ર આવક ₹5,00,000 સુધી ₹0 ટેક્સ
   double _calculateIncomeTaxOldRegime(double taxableIncome, {String ageGroup = 'regular'}) {
     if (taxableIncome <= 500000) return 0.0;
     double basicExemption = 250000.0;
@@ -1289,7 +1951,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     if (taxableIncome > 1000000.0) {
       tax += (taxableIncome - 1000000.0) * 0.30;
     }
-    return tax * 1.04; // 4% Health & Education Cess
+    return tax * 1.04;
   }
 
   Map<String, double> _getCapitalGainsSummary({bool entireFY = false}) {
@@ -1354,7 +2016,6 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     };
   }
 
-  // આખી એપમાંથી (દૈનિક નોંધ, MF, સ્ટોક, FD/બોન્ડ/PLI, ઓટો-પે, બેંક ખાતા) આવક અને ટેક્સ ડિડક્શન ફેચ કરતું ફંક્શન
   Map<String, double> _fetchComprehensiveTaxData({bool entireFY = true}) {
     final fyStart = DateTime(selectedFinancialYearStart, 4, 1);
     final fyEnd = DateTime(selectedFinancialYearStart + 1, 3, 31, 23, 59, 59);
@@ -1366,7 +2027,6 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     double raw80D = 0.0;
     double rawHomeOrEduLoan = 0.0;
 
-    // ૧. દૈનિક વ્યવહારોમાંથી આવક અને કરબચત રોકાણો ફેચ કરો (વેચાણની મૂળ રકમ Capital Gains માં ગણાતી હોવાથી બાકાત)
     for (final tx in txList) {
       final String id = (tx['id'] ?? '').toString();
       final String title = (tx['title'] ?? '').toString().toLowerCase();
@@ -1387,7 +2047,6 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
         }
       }
 
-      // જો મેન્યુઅલ વ્યવહાર હોય તો તેમાંથી 80C / 80D તપાસો
       final bool isLinkedBoxTx = id.startsWith('tx_mf_') || id.startsWith('tx_stk_') || id.startsWith('tx_fi_') || id.startsWith('tx_bullion_') || id.startsWith('tx_asset_');
       if (!isLinkedBoxTx) {
         if (title.contains('pli') ||
@@ -1412,7 +2071,6 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       }
     }
 
-    // ૨. મ્યુચ્યુઅલ ફંડ બોક્સમાંથી ELSS / Tax Saver ફંડ ફેચ કરો
     for (final m in mfInvestmentsBox.values) {
       final dt = DateTime.tryParse(m['date'] ?? '') ?? DateTime.now();
       if (!entireFY || (!dt.isBefore(fyStart) && !dt.isAfter(fyEnd))) {
@@ -1424,7 +2082,6 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       }
     }
 
-    // ૩. Fixed Income બોક્સમાંથી PLI, PPF, SSY, 5-Yr FD ફેચ કરો
     for (final f in fixedIncomeBox.values) {
       final dt = DateTime.tryParse(f['startDate'] ?? '') ?? DateTime.now();
       if (!entireFY || (!dt.isBefore(fyStart) && !dt.isAfter(fyEnd))) {
@@ -1443,7 +2100,6 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       }
     }
 
-    // ૪. AutoPay બોક્સમાંથી સક્રિય PLI, Health Insurance, Term Insurance ફેચ કરો (જો હજુ પ્રોસેસ ન થયા હોય તો પણ વાર્ષિક અંદાજમાં ગણાય)
     for (final a in autoPayBox.values) {
       if (a['isActive'] == true) {
         final aType = (a['type'] ?? '').toString();
@@ -1456,32 +2112,36 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       }
     }
 
-    // ૫. બેંક બચત ખાતાનું વ્યાજ
     double bankSavingsBalance = 0.0;
+    double estimatedBankInterest = 0.0;
+    final double defaultBankIntRate = (settingsBox.get('bankInterestRate', defaultValue: 3.5) as num).toDouble();
+
     for (final acc in accounts) {
-      final aType = (acc['type'] ?? '').toString().toLowerCase();
-      if (!aType.contains('credit') && !aType.contains('ક્રેડિટ')) {
+      if (!_isCreditCardAccount(acc)) {
         final bal = getAccountCurrentBalance(acc['id'].toString());
-        if (bal > 0) bankSavingsBalance += bal;
+        if (bal > 0) {
+          bankSavingsBalance += bal;
+          final aType = (acc['type'] ?? '').toString().toLowerCase();
+          final isCash = aType.contains('cash') || aType.contains('રોકડ');
+          if (!isCash) {
+            final accRate = (acc['interestRate'] as num?)?.toDouble() ?? defaultBankIntRate;
+            estimatedBankInterest += bal * (accRate / 100.0);
+          }
+        }
       }
     }
-    final double bankIntRate = (settingsBox.get('bankInterestRate', defaultValue: 3.5) as num).toDouble();
-    final double estimatedBankInterest = bankSavingsBalance * (bankIntRate / 100.0);
-    final double totalBankInterest = recordedBankInterest > 0 ? recordedBankInterest : estimatedBankInterest;
 
-    // જો દૈનિક નોંધમાં બેંક વ્યાજ અલગથી ન ઉમેર્યું હોય અને વપરાશકર્તાએ ઓટો-બેંક વ્યાજ ચાલુ રાખ્યું હોય
+    final double totalBankInterest = recordedBankInterest > 0 ? recordedBankInterest : estimatedBankInterest;
     final bool includeEstBankIntInTax = settingsBox.get('includeEstBankIntInTax', defaultValue: false) == true;
     final double effectiveGrossIncome = regularGrossIncome + (includeEstBankIntInTax && recordedBankInterest == 0 ? estimatedBankInterest : 0.0);
 
     final String ageGroup = settingsBox.get('taxAgeGroup', defaultValue: 'regular').toString();
     final double extraDeductions = (settingsBox.get('extraOldRegimeDeductions', defaultValue: 0.0) as num).toDouble() + rawHomeOrEduLoan;
 
-    // New Regime ગણતરી (ફોટો ૪ મુજબ)
     const double stdDedNew = 75000.0;
     final double taxableNew = math.max(0.0, effectiveGrossIncome - stdDedNew);
     final double slabTaxNew = _calculateIncomeTaxNewRegime(taxableNew);
 
-    // Old Regime ગણતરી (ફોટો ૫ મુજબ)
     const double stdDedOld = 50000.0;
     final double allowed80C = math.min(150000.0, raw80C);
     final double max80DLimit = ageGroup == 'regular' ? 25000.0 : 50000.0;
@@ -1493,7 +2153,6 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     final double taxableOld = math.max(0.0, effectiveGrossIncome - totalOldDeductions);
     final double slabTaxOld = _calculateIncomeTaxOldRegime(taxableOld, ageGroup: ageGroup);
 
-    // Capital Gains (STCG & LTCG)
     final cg = _getCapitalGainsSummary(entireFY: entireFY);
     final double stcg = cg['stcg'] ?? 0.0;
     final double ltcg = cg['ltcg'] ?? 0.0;
@@ -1527,7 +2186,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     };
   }
 
-  // આખી એપમાંથી સંપૂર્ણ રોકાણ અને બચતનું વર્ગીકરણ (Equity, MF [Equity/Debt/Hybrid/ELSS], FD, Bond, PLI, Bullion, Bank Interest)
+  // આખી એપમાંથી સંપૂર્ણ રોકાણ અને બચતનું વર્ગીકરણ (૬ મુખ્ય કેટેગરીઓ + પેટા કેટેગરીઓ)
   Map<String, dynamic> _fetchCompletePortfolioBreakdown() {
     double directStocksVal = 0.0;
     double directEtfVal = 0.0;
@@ -1582,6 +2241,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     double fixedIncomeInv = 0.0;
 
     for (final f in fixedIncomeBox.values) {
+      if (f['isSettled'] == true && f['isPrematureClosed'] == true) continue;
       final p = (f['principalAmount'] as num?)?.toDouble() ?? 0.0;
       final mat = (f['scheduledAmount'] as num?)?.toDouble() ?? p;
       final val = mat > p ? mat : p;
@@ -1598,11 +2258,11 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       }
     }
 
-    // 4. Bullion (Gold 24K, Gold 22K, Silver)
-    final rates = bullionCityRates[selectedCity] ?? {"gold24": 96500.0, "gold22": 88400.0, "silver": 112000.0};
+    // 4. Bullion (Gold 24K, Gold 22K, Silver, Custom Metals)
     double gold24Val = 0.0;
     double gold22Val = 0.0;
     double silverVal = 0.0;
+    double otherMetalsVal = 0.0;
     double bullionInv = 0.0;
 
     for (final b in bullionInvestmentsBox.values) {
@@ -1610,26 +2270,47 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       final buyP = (b['buyPrice'] as num?)?.toDouble() ?? 0.0;
       final mType = (b['metalType'] ?? '').toString();
       bullionInv += buyP;
-      if (mType.contains('22K')) {
-        gold22Val += weight * (rates['gold22']! / 10.0);
+      final perG = _getMetalLiveRatePerGram(mType);
+      final liveVal = weight * perG;
+      if (mType.contains('24K')) {
+        gold24Val += liveVal;
+      } else if (mType.contains('22K')) {
+        gold22Val += liveVal;
       } else if (mType.contains('Silver') || mType.contains('ચાંદી')) {
-        silverVal += weight * (rates['silver']! / 1000.0);
+        silverVal += liveVal;
       } else {
-        gold24Val += weight * (rates['gold24']! / 10.0);
+        otherMetalsVal += liveVal;
       }
     }
 
-    // 5. Physical Assets
-    double physicalAssetsVal = 0.0;
+    // 5. Physical Assets / Real Estate (મકાન, ખેતર, દુકાનો, પ્લોટ, અન્ય)
+    double houseFlatVal = 0.0;
+    double farmLandVal = 0.0;
+    double shopOfficeVal = 0.0;
+    double plotLandVal = 0.0;
+    double otherPhysicalVal = 0.0;
     double physicalAssetsInv = 0.0;
+
     for (final a in physicalAssetsBox.values) {
       final v = (a['value'] as num?)?.toDouble() ?? 0.0;
       final curV = (a['currentValue'] as num?)?.toDouble() ?? v;
+      final aType = (a['type'] ?? '').toString();
       physicalAssetsInv += v;
-      physicalAssetsVal += curV;
+      if (aType.contains('મકાન') || aType.contains('ફ્લેટ')) {
+        houseFlatVal += curV;
+      } else if (aType.contains('ખેત')) {
+        farmLandVal += curV;
+      } else if (aType.contains('દુકાન') || aType.contains('ઓફિસ')) {
+        shopOfficeVal += curV;
+      } else if (aType.contains('પ્લોટ') || aType.contains('જમીન')) {
+        plotLandVal += curV;
+      } else {
+        otherPhysicalVal += curV;
+      }
     }
+    final double physicalAssetsVal = houseFlatVal + farmLandVal + shopOfficeVal + plotLandVal + otherPhysicalVal;
 
-    // 6. દૈનિક વ્યવહારો (transactionsBox) માંથી એવા રોકાણો ફેચ કરો જે સીધા હોમ ટેબ પરથી ઉમેરાયા હોય
+    // 6. દૈનિક વ્યવહારોમાંથી સીધા ઉમેરાયેલા રોકાણો
     for (final rawTx in transactionsBox.values) {
       final tx = Map<dynamic, dynamic>.from(rawTx);
       final String id = (tx['id'] ?? '').toString();
@@ -1689,33 +2370,41 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       }
     }
 
-    // 7. બેંક ખાતાઓની સિલક અને મળતું વ્યાજ
+    // 7. બેંક ખાતાઓની સિલક અને ખાતાવાર વ્યાજ દર
     double bankSavingsBalance = 0.0;
     double cashWalletBalance = 0.0;
+    double annualEstimatedBankInterest = 0.0;
+    final double defaultBankInterestRate = (settingsBox.get('bankInterestRate', defaultValue: 3.5) as num).toDouble();
     final List<Map<String, dynamic>> bankAccountsBreakdown = [];
 
     for (final acc in accounts) {
+      if (_isCreditCardAccount(acc)) continue;
       final String accId = acc['id'].toString();
       final String accName = (acc['name'] ?? 'ખાતું').toString();
       final String accType = (acc['type'] ?? '').toString();
-      if (accType.toLowerCase().contains('credit') || accType.contains('ક્રેડિટ')) continue;
+      final String bankName = (acc['bankName'] ?? '').toString();
+      final String branchName = (acc['branchName'] ?? '').toString();
+      final double accIntRate = (acc['interestRate'] as num?)?.toDouble() ?? defaultBankInterestRate;
 
       final double bal = math.max(0.0, getAccountCurrentBalance(accId));
-      final bool isCash = accType.toLowerCase().contains('cash') || accType.contains('રોકડ');
+      final bool isCash = accType.toLowerCase().contains('cash') || accType.contains('રોકડ') || acc['accountCategory'] == 'Cash';
       if (isCash) {
         cashWalletBalance += bal;
       } else {
         bankSavingsBalance += bal;
+        annualEstimatedBankInterest += bal * (accIntRate / 100.0);
       }
       bankAccountsBreakdown.add({
         'name': accName,
+        'bankName': bankName,
+        'branchName': branchName,
         'type': accType,
+        'interestRate': isCash ? 0.0 : accIntRate,
         'balance': bal,
         'isCash': isCash,
       });
     }
 
-    final double bankInterestRate = (settingsBox.get('bankInterestRate', defaultValue: 3.5) as num).toDouble();
     double recordedBankInterest = 0.0;
     for (final rawTx in entireFYTransactions) {
       final tx = Map<dynamic, dynamic>.from(rawTx);
@@ -1724,13 +2413,15 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
         recordedBankInterest += (tx['amount'] as num?)?.toDouble() ?? 0.0;
       }
     }
-    final double annualEstimatedBankInterest = bankSavingsBalance * (bankInterestRate / 100.0);
     final double effectiveBankInterest = recordedBankInterest > 0 ? recordedBankInterest : annualEstimatedBankInterest;
+    final double weightedBankRate = bankSavingsBalance > 0
+        ? (annualEstimatedBankInterest / bankSavingsBalance) * 100.0
+        : defaultBankInterestRate;
 
     final double directEquityTotal = directStocksVal + directEtfVal;
     final double mfTotalVal = mfEquityVal + mfDebtVal + mfHybridVal + mfElssVal;
     final double fixedIncomeTotalVal = fdVal + bondVal + pliVal + ppfPostOfficeVal;
-    final double bullionTotalVal = gold24Val + gold22Val + silverVal;
+    final double bullionTotalVal = gold24Val + gold22Val + silverVal + otherMetalsVal;
     final double totalLiquidSavings = bankSavingsBalance + cashWalletBalance;
 
     final double totalInvestmentsVal = directEquityTotal + mfTotalVal + fixedIncomeTotalVal + bullionTotalVal + physicalAssetsVal;
@@ -1754,12 +2445,18 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       'gold24Val': gold24Val,
       'gold22Val': gold22Val,
       'silverVal': silverVal,
+      'otherMetalsVal': otherMetalsVal,
       'bullionTotalVal': bullionTotalVal,
+      'houseFlatVal': houseFlatVal,
+      'farmLandVal': farmLandVal,
+      'shopOfficeVal': shopOfficeVal,
+      'plotLandVal': plotLandVal,
+      'otherPhysicalVal': otherPhysicalVal,
       'physicalAssetsVal': physicalAssetsVal,
       'bankSavingsBalance': bankSavingsBalance,
       'cashWalletBalance': cashWalletBalance,
       'totalLiquidSavings': totalLiquidSavings,
-      'bankInterestRate': bankInterestRate,
+      'bankInterestRate': weightedBankRate,
       'annualEstimatedBankInterest': annualEstimatedBankInterest,
       'recordedBankInterest': recordedBankInterest,
       'effectiveBankInterest': effectiveBankInterest,
@@ -1792,126 +2489,304 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     };
   }
 
+
   // =========================================================
-  // AppBar માં ₹ (રૂપિયા) ના સંકેત પર ક્લિક કરતાં ખુલતી આખી નવી સ્ક્રીન:
-  // ૧. સંપૂર્ણ રોકાણ અને બચતનું ટકાવારી (%) સાથે એનાલિસિસ
-  // ૨. પ્રશ્નો દ્વારા રિસ્ક કેપેસિટી અને રોકાણ સરખામણી
-  // ૩. પોતાની કસ્ટમ સ્ટ્રેટેજી અને વાસ્તવિક રોકાણ સરખામણી
+  // AppBar માં ₹ (રૂપિયા) ના સંકેત પર ક્લિક કરતાં ખુલતી ૫ ટેબની સ્ક્રીન:
+  // ૧. રોકાણ & બચત (%) - દરેક કેટેગરી નીચે + નિશાની અને ૬ઠ્ઠી કેટેગરી સ્થાવર સંપત્તિ (મકાન, ખેતર, દુકાનો)
+  // ૨. રિસ્ક કેપેસિટી પ્રશ્નો - રિયલ એસ્ટેટ પ્રશ્નો, રીસેટ બટન, એક પછી એક પ્રશ્નો (Step-by-step), લોક/અનલોક & કન્ટીન્યુ
+  // ૩. રિસ્ક સ્ટ્રેટેજી સરખામણી - ટેબ ૨ માં લોક કરેલ સ્ટ્રેટેજી અને હાલના રોકાણની સરખામણી
+  // ૪. મારી કસ્ટમ સ્ટ્રેટેજી - સ્લાઇડર વડે કસ્ટમ સ્ટ્રેટેજી અને સરખામણી
+  // ૫. ભવિષ્યનું મૂલ્ય (1, 5, 10, 20, 30 વર્ષ) - ઓટો અથવા મેન્યુઅલ વૃદ્ધિ દર સાથે પ્રોજેક્શન
   // =========================================================
   void _openAnnualTaxAndExpenseDialog() {
+    // કઈ મુખ્ય કેટેગરીની પેટા-કેટેગરી (+) ખુલ્લી છે તેનો સેટ
+    final Set<int> expandedCategories = {};
+    final Set<int> expandedProjectionYears = {};
+
+    // ટેબ ૨ માટે એક-પછી-એક પ્રશ્નનો ઇન્ડેક્સ (0 થી 7 પ્રશ્નો, 8 = અંતિમ મૂલ્યાંકન અને સ્ટ્રેટેજી)
+    bool isLockedInit = settingsBox.get('isRiskStrategyLocked', defaultValue: false) == true;
+    int currentQuestionStep = isLockedInit ? 8 : 0;
+
+    // ટેબ ૫ માટે પ્રોજેક્શન સેટિંગ્સ
+    String projectionGrowthMode = settingsBox.get('proj_growth_mode', defaultValue: 'auto').toString(); // 'auto' OR 'manual'
+    double manualAnnualGrowthRate = (settingsBox.get('proj_manual_rate', defaultValue: 12.0) as num).toDouble();
+    String projectionStrategySource = settingsBox.get('proj_strategy_source', defaultValue: 'locked_risk').toString(); // 'locked_risk' OR 'custom_strat'
+    double monthlySipAddition = (settingsBox.get('proj_monthly_sip', defaultValue: 0.0) as num).toDouble();
+
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (pageCtx) {
-          return StatefulBuilder(
-            builder: (pageCtx, setPageState) {
-              final data = _fetchCompletePortfolioBreakdown();
-              final double grandTotal = math.max(0.0, (data['grandTotalWealth'] as num).toDouble());
-              final double totalInvOnly = (data['totalInvestmentsVal'] as num).toDouble();
+          return DefaultTabController(
+            length: 5,
+            child: StatefulBuilder(
+              builder: (tabCtx, setPageState) {
+                final data = _fetchCompletePortfolioBreakdown();
+                final double grandTotal = math.max(0.0, (data['grandTotalWealth'] as num).toDouble());
+                final double totalInvOnly = (data['totalInvestmentsVal'] as num).toDouble();
 
-              final double directEquity = (data['directEquityTotal'] as num).toDouble();
-              final double mfEquity = (data['mfEquityVal'] as num).toDouble();
-              final double mfElss = (data['mfElssVal'] as num).toDouble();
-              final double mfDebt = (data['mfDebtVal'] as num).toDouble();
-              final double mfHybrid = (data['mfHybridVal'] as num).toDouble();
-              final double mfTotal = (data['mfTotalVal'] as num).toDouble();
+                final double directEquity = (data['directEquityTotal'] as num).toDouble();
+                final double mfEquity = (data['mfEquityVal'] as num).toDouble();
+                final double mfElss = (data['mfElssVal'] as num).toDouble();
+                final double mfDebt = (data['mfDebtVal'] as num).toDouble();
+                final double mfHybrid = (data['mfHybridVal'] as num).toDouble();
+                final double mfTotal = (data['mfTotalVal'] as num).toDouble();
 
-              final double fdVal = (data['fdVal'] as num).toDouble();
-              final double bondVal = (data['bondVal'] as num).toDouble();
-              final double pliVal = (data['pliVal'] as num).toDouble();
-              final double ppfVal = (data['ppfPostOfficeVal'] as num).toDouble();
-              final double fixedTotal = (data['fixedIncomeTotalVal'] as num).toDouble();
+                final double fdVal = (data['fdVal'] as num).toDouble();
+                final double bondVal = (data['bondVal'] as num).toDouble();
+                final double pliVal = (data['pliVal'] as num).toDouble();
+                final double ppfVal = (data['ppfPostOfficeVal'] as num).toDouble();
+                final double fixedTotal = (data['fixedIncomeTotalVal'] as num).toDouble();
 
-              final double gold24Val = (data['gold24Val'] as num).toDouble();
-              final double gold22Val = (data['gold22Val'] as num).toDouble();
-              final double silverVal = (data['silverVal'] as num).toDouble();
-              final double bullionTotal = (data['bullionTotalVal'] as num).toDouble();
+                final double gold24Val = (data['gold24Val'] as num).toDouble();
+                final double gold22Val = (data['gold22Val'] as num).toDouble();
+                final double silverVal = (data['silverVal'] as num).toDouble();
+                final double otherMetalsVal = (data['otherMetalsVal'] as num).toDouble();
+                final double bullionTotal = (data['bullionTotalVal'] as num).toDouble();
 
-              final double physicalVal = (data['physicalAssetsVal'] as num).toDouble();
-              final double bankSavings = (data['bankSavingsBalance'] as num).toDouble();
-              final double cashBal = (data['cashWalletBalance'] as num).toDouble();
-              final double liquidTotal = (data['totalLiquidSavings'] as num).toDouble();
-              final double bankIntRate = (data['bankInterestRate'] as num).toDouble();
-              final double annualBankIntRs = (data['effectiveBankInterest'] as num).toDouble();
+                final double houseFlatVal = (data['houseFlatVal'] as num).toDouble();
+                final double farmLandVal = (data['farmLandVal'] as num).toDouble();
+                final double shopOfficeVal = (data['shopOfficeVal'] as num).toDouble();
+                final double plotLandVal = (data['plotLandVal'] as num).toDouble();
+                final double otherPhysicalVal = (data['otherPhysicalVal'] as num).toDouble();
+                final double physicalVal = (data['physicalAssetsVal'] as num).toDouble();
 
-              double pctOfGrand(double v) => grandTotal > 0 ? (v / grandTotal) * 100.0 : 0.0;
-              double pctOfInv(double v) => totalInvOnly > 0 ? (v / totalInvOnly) * 100.0 : 0.0;
+                final double bankSavings = (data['bankSavingsBalance'] as num).toDouble();
+                final double cashBal = (data['cashWalletBalance'] as num).toDouble();
+                final double liquidTotal = (data['totalLiquidSavings'] as num).toDouble();
+                final double bankIntRate = (data['bankInterestRate'] as num).toDouble();
+                final double annualBankIntRs = (data['effectiveBankInterest'] as num).toDouble();
 
-              // --- ટેબ ૨ માટે: રિસ્ક કેપેસિટી પ્રશ્નોના જવાબો (0 થી 3 સ્કોર) ---
-              int q1Age = (settingsBox.get('risk_q1_age', defaultValue: 2) as num).toInt();
-              int q2Horizon = (settingsBox.get('risk_q2_horizon', defaultValue: 2) as num).toInt();
-              int q3DropReact = (settingsBox.get('risk_q3_drop', defaultValue: 2) as num).toInt();
-              int q4IncomeStab = (settingsBox.get('risk_q4_income', defaultValue: 2) as num).toInt();
-              int q5Emergency = (settingsBox.get('risk_q5_emerg', defaultValue: 2) as num).toInt();
-              int q6Goal = (settingsBox.get('risk_q6_goal', defaultValue: 2) as num).toInt();
+                double pctOfGrand(double v) => grandTotal > 0 ? (v / grandTotal) * 100.0 : 0.0;
+                double pctOfInv(double v) => totalInvOnly > 0 ? (v / totalInvOnly) * 100.0 : 0.0;
 
-              final int totalRiskPoints = q1Age + q2Horizon + q3DropReact + q4IncomeStab + q5Emergency + q6Goal; // Max 18
-              final double riskScore100 = (totalRiskPoints / 18.0) * 100.0;
+                // --- ટેબ ૨ માટે: ૮ રિસ્ક કેપેસિટી પ્રશ્નો (રિયલ એસ્ટેટ સહિત) ---
+                int q1Age = (settingsBox.get('risk_q1_age', defaultValue: 2) as num).toInt();
+                int q2Horizon = (settingsBox.get('risk_q2_horizon', defaultValue: 2) as num).toInt();
+                int q3DropReact = (settingsBox.get('risk_q3_drop', defaultValue: 2) as num).toInt();
+                int q4IncomeStab = (settingsBox.get('risk_q4_income', defaultValue: 2) as num).toInt();
+                int q5Emergency = (settingsBox.get('risk_q5_emerg', defaultValue: 2) as num).toInt();
+                int q6Goal = (settingsBox.get('risk_q6_goal', defaultValue: 2) as num).toInt();
+                int q7RealEstatePref = (settingsBox.get('risk_q7_realestate_pref', defaultValue: 2) as num).toInt();
+                int q8RealEstateHorizon = (settingsBox.get('risk_q8_realestate_horizon', defaultValue: 2) as num).toInt();
 
-              String riskProfileName;
-              Color riskColor;
-              Map<String, double> recommendedPct;
+                final List<Map<String, dynamic>> riskQuestions = [
+                  {
+                    'key': 'risk_q1_age',
+                    'val': q1Age,
+                    'icon': Icons.person_outline,
+                    'question': '૧. તમારી ઉંમરનો ગાળો શું છે?',
+                    'options': ['60+ વર્ષ (નિવૃત્ત)', '45 થી 60 વર્ષ', '30 થી 45 વર્ષ', '30 વર્ષથી ઓછી'],
+                  },
+                  {
+                    'key': 'risk_q2_horizon',
+                    'val': q2Horizon,
+                    'icon': Icons.timelapse,
+                    'question': '૨. તમે કેટલા સમયગાળા માટે રોકાણ જાળવી શકો છો?',
+                    'options': ['1 થી 3 વર્ષ (ટૂંકા ગાળા)', '3 થી 5 વર્ષ (મધ્યમ ગાળા)', '5 થી 10 વર્ષ (લાંબા ગાળા)', '10+ વર્ષ (લાંબા ગાળાનું વેલ્થ ક્રિએશન)'],
+                  },
+                  {
+                    'key': 'risk_q3_drop',
+                    'val': q3DropReact,
+                    'icon': Icons.trending_down,
+                    'question': '૩. જો શેરબજાર અચાનક 15-20% ઘટે તો તમે શું કરશો?',
+                    'options': ['નુકસાનથી બચવા તરત વેચી દઈશ', 'થોડું વેચીને FD માં મૂકીશ', 'રોકાણ જાળવી રાખીશ (Hold)', 'ઘટાડામાં વધુ ખરીદી (Buy More) કરીશ'],
+                  },
+                  {
+                    'key': 'risk_q4_income',
+                    'val': q4IncomeStab,
+                    'icon': Icons.work_outline,
+                    'question': '૪. તમારી આવકની સ્થિરતા કેવી છે?',
+                    'options': ['અનિશ્ચિત આવક', 'સામાન્ય ખાનગી/ધંધાકીય આવક', 'સ્થિર માસિક પગાર / સારો વ્યવસાય', 'સરકારી/સુરક્ષિત પગાર + વધારાની આવક'],
+                  },
+                  {
+                    'key': 'risk_q5_emerg',
+                    'val': q5Emergency,
+                    'icon': Icons.health_and_safety_outlined,
+                    'question': '૫. તમારી પાસે 6 મહિનાના ખર્ચ જેટલું ઇમરજન્સી ફંડ છે?',
+                    'options': ['ના, બિલકુલ નથી', '1-2 મહિના પૂરતું છે', '3-5 મહિના પૂરતું છે', 'હા, 6+ મહિનાનું સંપૂર્ણ સુરક્ષિત ફંડ છે'],
+                  },
+                  {
+                    'key': 'risk_q6_goal',
+                    'val': q6Goal,
+                    'icon': Icons.flag_outlined,
+                    'question': '૬. તમારા રોકાણનો મુખ્ય હેતુ શું છે?',
+                    'options': ['માત્ર મૂડીની સુરક્ષા (6-7% વળતર)', 'નિયમિત વ્યાજ અને સુરક્ષા (8-9% વળતર)', 'સંતુલિત વૃદ્ધિ અને ટેક્સ બચત (10-12% વળતર)', 'ઉચ્ચ સંપત્તિ સર્જન (13-16%+ વળતર)'],
+                  },
+                  {
+                    'key': 'risk_q7_realestate_pref',
+                    'val': q7RealEstatePref,
+                    'icon': Icons.home_work_outlined,
+                    'question': '૭. મકાન, ખેતર કે દુકાન (રિયલ એસ્ટેટ) જેવી સ્થાવર સંપત્તિમાં રોકાણ અંગે તમારો અભિગમ શું છે?',
+                    'options': [
+                      'હું માત્ર લિક્વિડ નાણાકીય રોકાણ (FD/MF) જ પસંદ કરું છું (0-5%)',
+                      'રહેઠાણ પૂરતું મકાન / થોડું રોકાણ રાખવું ગમે છે (10-15%)',
+                      'મકાન, ખેતર કે દુકાનમાંથી ભાડા/મૂડી વૃદ્ધિ માટે સંતુલિત રોકાણ (18-25%)',
+                      'લાંબા ગાળે જમીન, ખેતર અને કોમર્શિયલ દુકાનોમાં મોટું રોકાણ પસંદ છે (28-35%)',
+                    ],
+                  },
+                  {
+                    'key': 'risk_q8_realestate_horizon',
+                    'val': q8RealEstateHorizon,
+                    'icon': Icons.landscape_outlined,
+                    'question': '૮. સ્થાવર સંપત્તિ (મકાન/ખેતર/દુકાન) માં રોકાયેલ મૂડી તરત રોકડમાં ન ફેરવી શકાય (Illiquidity) તો તમને ચાલે?',
+                    'options': [
+                      'ના, મને ગમે ત્યારે તરત રોકડ મળે તેવું જ રોકાણ જોઈએ',
+                      'થોડી મૂડી 3-5 વર્ષ બ્લોક રહે તો વાંધો નથી',
+                      'હા, 5-10 વર્ષ સુધી સ્થાવર સંપત્તિ જાળવી શકું છું',
+                      'હા, પેઢીગત સંપત્તિ અને ભાડાની આવક માટે 10-20+ વર્ષ રાખી શકું છું',
+                    ],
+                  },
+                ];
 
-              if (riskScore100 >= 70) {
-                riskProfileName = 'વૃદ્ધિલક્ષી / આક્રમક (Aggressive Growth)';
-                riskColor = Colors.deepPurple;
-                recommendedPct = {
-                  'ઇક્વિટી (શેર + ઇક્વિટી MF)': 60.0,
-                  'ડેબ્ટ અને હાઇબ્રીડ MF': 10.0,
-                  'FD / બોન્ડ / PLI / PPF': 10.0,
-                  'સોનું / ચાંદી (ધાતુઓ)': 10.0,
-                  'બેંક બચત અને રોકડ': 10.0,
+                final int finPoints = q1Age + q2Horizon + q3DropReact + q4IncomeStab + q5Emergency + q6Goal; // Max 18
+                final int rePoints = q7RealEstatePref + q8RealEstateHorizon; // Max 6
+                final int totalRiskPoints = finPoints + rePoints; // Max 24
+                final double riskScore100 = (totalRiskPoints / 24.0) * 100.0;
+
+                // રિયલ એસ્ટેટ ટકાવારી (પ્રશ્ન 7 અને 8 ના આધારે 5% થી 30%)
+                final double calcRealEstatePct = (5.0 + (rePoints * 4.0)).roundToDouble(); // 5% to 29%
+                final double remPctPool = 100.0 - calcRealEstatePct;
+
+                String riskProfileName;
+                Color riskColor;
+                Map<String, double> evaluatedPct;
+
+                if (finPoints >= 13) {
+                  riskProfileName = 'વૃદ્ધિલક્ષી / આક્રમક (Aggressive Growth)';
+                  riskColor = Colors.deepPurple;
+                  final eq = (remPctPool * 0.52).roundToDouble();
+                  final debt = (remPctPool * 0.12).roundToDouble();
+                  final fd = (remPctPool * 0.12).roundToDouble();
+                  final gold = (remPctPool * 0.12).roundToDouble();
+                  final bank = math.max(0.0, 100.0 - (eq + debt + fd + gold + calcRealEstatePct));
+                  evaluatedPct = {
+                    'ઇક્વિટી (શેર + ઇક્વિટી MF)': eq,
+                    'ડેબ્ટ અને હાઇબ્રીડ MF': debt,
+                    'FD / બોન્ડ / PLI / PPF': fd,
+                    'સોનું / ચાંદી (ધાતુઓ)': gold,
+                    'બેંક બચત અને રોકડ': bank,
+                    'સ્થાવર સંપત્તિ (મકાન/ખેતર/દુકાનો)': calcRealEstatePct,
+                  };
+                } else if (finPoints >= 8) {
+                  riskProfileName = 'મધ્યમ અને સંતુલિત (Moderate Balanced)';
+                  riskColor = Colors.teal.shade700;
+                  final eq = (remPctPool * 0.36).roundToDouble();
+                  final debt = (remPctPool * 0.16).roundToDouble();
+                  final fd = (remPctPool * 0.22).roundToDouble();
+                  final gold = (remPctPool * 0.12).roundToDouble();
+                  final bank = math.max(0.0, 100.0 - (eq + debt + fd + gold + calcRealEstatePct));
+                  evaluatedPct = {
+                    'ઇક્વિટી (શેર + ઇક્વિટી MF)': eq,
+                    'ડેબ્ટ અને હાઇબ્રીડ MF': debt,
+                    'FD / બોન્ડ / PLI / PPF': fd,
+                    'સોનું / ચાંદી (ધાતુઓ)': gold,
+                    'બેંક બચત અને રોકડ': bank,
+                    'સ્થાવર સંપત્તિ (મકાન/ખેતર/દુકાનો)': calcRealEstatePct,
+                  };
+                } else {
+                  riskProfileName = 'સુરક્ષિત / મૂડી રક્ષણ (Conservative)';
+                  riskColor = Colors.blue.shade800;
+                  final eq = (remPctPool * 0.18).roundToDouble();
+                  final debt = (remPctPool * 0.16).roundToDouble();
+                  final fd = (remPctPool * 0.34).roundToDouble();
+                  final gold = (remPctPool * 0.12).roundToDouble();
+                  final bank = math.max(0.0, 100.0 - (eq + debt + fd + gold + calcRealEstatePct));
+                  evaluatedPct = {
+                    'ઇક્વિટી (શેર + ઇક્વિટી MF)': eq,
+                    'ડેબ્ટ અને હાઇબ્રીડ MF': debt,
+                    'FD / બોન્ડ / PLI / PPF': fd,
+                    'સોનું / ચાંદી (ધાતુઓ)': gold,
+                    'બેંક બચત અને રોકડ': bank,
+                    'સ્થાવર સંપત્તિ (મકાન/ખેતર/દુકાનો)': calcRealEstatePct,
+                  };
+                }
+
+                final bool isRiskStrategyLocked = settingsBox.get('isRiskStrategyLocked', defaultValue: false) == true;
+                Map<String, double> activeLockedRiskStrategy = Map<String, double>.from(evaluatedPct);
+                final rawSavedLocked = settingsBox.get('lockedRiskStrategy');
+                if (isRiskStrategyLocked && rawSavedLocked is Map) {
+                  activeLockedRiskStrategy = rawSavedLocked.map((k, v) => MapEntry(k.toString(), (v as num).toDouble()));
+                }
+
+                // કુલ સંપત્તિના આધારે વાસ્તવિક રોકાણ (૬ કેટેગરીઓ)
+                final double wealthBase = math.max(1.0, grandTotal);
+                final Map<String, double> actualRsForRiskMap = {
+                  'ઇક્વિટી (શેર + ઇક્વિટી MF)': directEquity + mfEquity + mfElss,
+                  'ડેબ્ટ અને હાઇબ્રીડ MF': mfDebt + mfHybrid,
+                  'FD / બોન્ડ / PLI / PPF': fixedTotal,
+                  'સોનું / ચાંદી (ધાતુઓ)': bullionTotal,
+                  'બેંક બચત અને રોકડ': liquidTotal,
+                  'સ્થાવર સંપત્તિ (મકાન/ખેતર/દુકાનો)': physicalVal,
                 };
-              } else if (riskScore100 >= 42) {
-                riskProfileName = 'મધ્યમ અને સંતુલિત (Moderate Balanced)';
-                riskColor = Colors.teal.shade700;
-                recommendedPct = {
-                  'ઇક્વિટી (શેર + ઇક્વિટી MF)': 40.0,
-                  'ડેબ્ટ અને હાઇબ્રીડ MF': 15.0,
-                  'FD / બોન્ડ / PLI / PPF': 20.0,
-                  'સોનું / ચાંદી (ધાતુઓ)': 10.0,
-                  'બેંક બચત અને રોકડ': 15.0,
+                final Map<String, double> actualPctForRiskMap = actualRsForRiskMap.map(
+                  (k, v) => MapEntry(k, (v / wealthBase) * 100.0),
+                );
+
+                // --- ટેબ ૪ માટે: યુઝરની પોતાની કસ્ટમ સ્ટ્રેટેજી (%) ---
+                double stDirectEq = (settingsBox.get('strat_direct_eq', defaultValue: 15.0) as num).toDouble();
+                double stMfEq = (settingsBox.get('strat_mf_eq', defaultValue: 20.0) as num).toDouble();
+                double stMfDebtHyb = (settingsBox.get('strat_mf_debthyb', defaultValue: 10.0) as num).toDouble();
+                double stFixed = (settingsBox.get('strat_fixed', defaultValue: 15.0) as num).toDouble();
+                double stBullion = (settingsBox.get('strat_bullion', defaultValue: 10.0) as num).toDouble();
+                double stBank = (settingsBox.get('strat_bank', defaultValue: 10.0) as num).toDouble();
+                double stRealEstate = (settingsBox.get('strat_real_estate', defaultValue: 20.0) as num).toDouble();
+                final double totalStrategyPct = stDirectEq + stMfEq + stMfDebtHyb + stFixed + stBullion + stBank + stRealEstate;
+
+                // --- ટેબ ૫ માટે: એસેટ ક્લાસ પ્રમાણે અંદાજિત વાર્ષિક વળતર દર (Auto CAGR %) ---
+                final Map<String, double> defaultCategoryCagr = {
+                  'ઇક્વિટી (શેર + ઇક્વિટી MF)': 14.0,
+                  'ડેબ્ટ અને હાઇબ્રીડ MF': 8.5,
+                  'FD / બોન્ડ / PLI / PPF': 7.2,
+                  'સોનું / ચાંદી (ધાતુઓ)': 10.5,
+                  'બેંક બચત અને રોકડ': bankIntRate > 0 ? bankIntRate : 3.5,
+                  'સ્થાવર સંપત્તિ (મકાન/ખેતર/દુકાનો)': 11.5,
                 };
-              } else {
-                riskProfileName = 'સુરક્ષિત / મૂડી રક્ષણ (Conservative)';
-                riskColor = Colors.blue.shade800;
-                recommendedPct = {
-                  'ઇક્વિટી (શેર + ઇક્વિટી MF)': 20.0,
-                  'ડેબ્ટ અને હાઇબ્રીડ MF': 15.0,
-                  'FD / બોન્ડ / PLI / PPF': 35.0,
-                  'સોનું / ચાંદી (ધાતુઓ)': 10.0,
-                  'બેંક બચત અને રોકડ': 20.0,
-                };
-              }
 
-              // પ્રશ્નોની સરખામણી માટે વાસ્તવિક ટકાવારી (સ્થાવર મિલકત સિવાયના નાણાકીય પોર્ટફોલિયો અથવા કુલ સંપત્તિના આધારે)
-              final double financialBase = math.max(1.0, grandTotal - physicalVal);
-              final Map<String, double> actualForRiskMap = {
-                'ઇક્વિટી (શેર + ઇક્વિટી MF)': ((directEquity + mfEquity + mfElss) / financialBase) * 100.0,
-                'ડેબ્ટ અને હાઇબ્રીડ MF': ((mfDebt + mfHybrid) / financialBase) * 100.0,
-                'FD / બોન્ડ / PLI / PPF': (fixedTotal / financialBase) * 100.0,
-                'સોનું / ચાંદી (ધાતુઓ)': (bullionTotal / financialBase) * 100.0,
-                'બેંક બચત અને રોકડ': (liquidTotal / financialBase) * 100.0,
-              };
-              final Map<String, double> actualRsForRiskMap = {
-                'ઇક્વિટી (શેર + ઇક્વિટી MF)': directEquity + mfEquity + mfElss,
-                'ડેબ્ટ અને હાઇબ્રીડ MF': mfDebt + mfHybrid,
-                'FD / બોન્ડ / PLI / PPF': fixedTotal,
-                'સોનું / ચાંદી (ધાતુઓ)': bullionTotal,
-                'બેંક બચત અને રોકડ': liquidTotal,
-              };
+                final Map<String, double> strategyForProjection = projectionStrategySource == 'custom_strat'
+                    ? {
+                        'ઇક્વિટી (શેર + ઇક્વિટી MF)': stDirectEq + stMfEq,
+                        'ડેબ્ટ અને હાઇબ્રીડ MF': stMfDebtHyb,
+                        'FD / બોન્ડ / PLI / PPF': stFixed,
+                        'સોનું / ચાંદી (ધાતુઓ)': stBullion,
+                        'બેંક બચત અને રોકડ': stBank,
+                        'સ્થાવર સંપત્તિ (મકાન/ખેતર/દુકાનો)': stRealEstate,
+                      }
+                    : activeLockedRiskStrategy;
 
-              // --- ટેબ ૩ માટે: યુઝરની પોતાની કસ્ટમ સ્ટ્રેટેજી (%) ---
-              double stDirectEq = (settingsBox.get('strat_direct_eq', defaultValue: 20.0) as num).toDouble();
-              double stMfEq = (settingsBox.get('strat_mf_eq', defaultValue: 25.0) as num).toDouble();
-              double stMfDebtHyb = (settingsBox.get('strat_mf_debthyb', defaultValue: 10.0) as num).toDouble();
-              double stFixed = (settingsBox.get('strat_fixed', defaultValue: 20.0) as num).toDouble();
-              double stBullion = (settingsBox.get('strat_bullion', defaultValue: 10.0) as num).toDouble();
-              double stBank = (settingsBox.get('strat_bank', defaultValue: 15.0) as num).toDouble();
-              final double totalStrategyPct = stDirectEq + stMfEq + stMfDebtHyb + stFixed + stBullion + stBank;
+                double autoWeightedRate = 0.0;
+                double sumStratWeights = 0.0;
+                strategyForProjection.forEach((catName, weightPct) {
+                  final r = defaultCategoryCagr[catName] ?? 10.0;
+                  autoWeightedRate += weightPct * r;
+                  sumStratWeights += weightPct;
+                });
+                if (sumStratWeights > 0) {
+                  autoWeightedRate = autoWeightedRate / sumStratWeights;
+                } else {
+                  autoWeightedRate = 11.0;
+                }
 
-              return DefaultTabController(
-                length: 3,
-                child: Scaffold(
+                final double effectiveProjectionRate =
+                    projectionGrowthMode == 'auto' ? autoWeightedRate : manualAnnualGrowthRate;
+
+                double calculateFutureWealth(double presentVal, double annualRatePct, int years, double monthlySip) {
+                  final double r = annualRatePct / 100.0;
+                  final double fvLumpsum = presentVal * math.pow(1.0 + r, years);
+                  double fvSip = 0.0;
+                  if (monthlySip > 0 && r > 0) {
+                    final double mr = r / 12.0;
+                    final int months = years * 12;
+                    fvSip = monthlySip * ((math.pow(1.0 + mr, months) - 1.0) / mr) * (1.0 + mr);
+                  } else if (monthlySip > 0) {
+                    fvSip = monthlySip * years * 12;
+                  }
+                  return fvLumpsum + fvSip;
+                }
+
+                final double baseProjectionCapital = grandTotal > 0 ? grandTotal : 100000.0;
+                final List<int> milestoneYears = [1, 5, 10, 20, 30];
+
+                return Scaffold(
                   appBar: AppBar(
                     title: const Text('સંપૂર્ણ રોકાણ અને બચત વિશ્લેષણ', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                     bottom: const TabBar(
@@ -1919,36 +2794,40 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                       tabs: [
                         Tab(icon: Icon(Icons.pie_chart, size: 18), text: '૧. રોકાણ & બચત (%)'),
                         Tab(icon: Icon(Icons.quiz, size: 18), text: '૨. રિસ્ક કેપેસિટી પ્રશ્નો'),
-                        Tab(icon: Icon(Icons.tune, size: 18), text: '૩. મારી સ્ટ્રેટેજી સરખામણી'),
+                        Tab(icon: Icon(Icons.compare_arrows, size: 18), text: '૩. રિસ્ક સ્ટ્રેટેજી સરખામણી'),
+                        Tab(icon: Icon(Icons.tune, size: 18), text: '૪. મારી કસ્ટમ સ્ટ્રેટેજી'),
+                        Tab(icon: Icon(Icons.auto_graph, size: 18), text: '૫. ભવિષ્યનું મૂલ્ય (1-30 વર્ષ)'),
                       ],
                     ),
                   ),
                   body: TabBarView(
                     children: [
                       // =========================================================
-                      // ટેબ ૧: સંપૂર્ણ રોકાણ અને બચતનું ટકાવારી પ્રમાણે વિશ્લેષણ
+                      // ટેબ ૧: સંપૂર્ણ રોકાણ અને બચતનું ટકાવારી પ્રમાણે વિશ્લેષણ (+ નિશાની સાથે)
                       // =========================================================
                       SingleChildScrollView(
                         padding: const EdgeInsets.fromLTRB(12, 12, 12, 40),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            // કુલ સંપત્તિ અને બચત સારાંશ કાર્ડ
                             Card(
-                              color: Colors.teal.shade50,
+                              color: adaptiveTintBg(Colors.teal),
                               child: Padding(
                                 padding: const EdgeInsets.all(14),
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    const Text('📊 કુલ રોકાણ અને બચત સારાંશ (આખી એપમાંથી ઓટો-ફેચ)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.black87)),
+                                    Text(
+                                      '📊 કુલ રોકાણ અને બચત સારાંશ (૬ મુખ્ય કેટેગરીઓ)',
+                                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: primaryTextColor),
+                                    ),
                                     const Divider(),
                                     Row(
                                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                       children: [
-                                        _metricColumn('કુલ સંપત્તિ (રોકાણ+બચત)', '₹${grandTotal.toStringAsFixed(0)}', Colors.teal.shade900),
-                                        _metricColumn('કુલ રોકાણ મૂલ્ય', '₹${totalInvOnly.toStringAsFixed(0)} (${pctOfGrand(totalInvOnly).toStringAsFixed(1)}%)', Colors.blue.shade900),
-                                        _metricColumn('બેંક + રોકડ બચત', '₹${liquidTotal.toStringAsFixed(0)} (${pctOfGrand(liquidTotal).toStringAsFixed(1)}%)', Colors.green.shade800),
+                                        _metricColumn('કુલ સંપત્તિ (રોકાણ+બચત)', '₹${grandTotal.toStringAsFixed(0)}', adaptiveAccentText(Colors.teal)),
+                                        _metricColumn('કુલ રોકાણ મૂલ્ય', '₹${totalInvOnly.toStringAsFixed(0)} (${pctOfGrand(totalInvOnly).toStringAsFixed(1)}%)', adaptiveAccentText(Colors.blue)),
+                                        _metricColumn('બેંક + રોકડ બચત', '₹${liquidTotal.toStringAsFixed(0)} (${pctOfGrand(liquidTotal).toStringAsFixed(1)}%)', adaptiveAccentText(Colors.green)),
                                       ],
                                     ),
                                   ],
@@ -1956,14 +2835,13 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                               ),
                             ),
 
-                            // પાઇ ચાર્ટ રજૂઆત
                             if (grandTotal > 0)
                               Card(
                                 child: Padding(
                                   padding: const EdgeInsets.all(12),
                                   child: Column(
                                     children: [
-                                      const Text('વિવિધ એસેટ ક્લાસમાં રોકાણની ટકાવારી (%)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+                                      const Text('વિવિધ ૬ એસેટ ક્લાસમાં રોકાણની ટકાવારી (%)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
                                       const SizedBox(height: 10),
                                       SizedBox(
                                         height: 175,
@@ -1992,12 +2870,12 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                                         spacing: 10,
                                         runSpacing: 4,
                                         children: [
-                                          _legendBadge(Colors.indigo, 'ઇક્વિટી (Stocks/ETF)'),
-                                          _legendBadge(Colors.teal, 'મ્યુચ્યુઅલ ફંડ'),
-                                          _legendBadge(Colors.orange, 'FD / બોન્ડ / PLI'),
-                                          _legendBadge(Colors.amber, 'સોનું / ચાંદી'),
-                                          _legendBadge(Colors.green, 'બેંક બચત'),
-                                          _legendBadge(Colors.purple, 'સ્થાવર મિલકત'),
+                                          _legendBadge(Colors.indigo, '૧. ઇક્વિટી'),
+                                          _legendBadge(Colors.teal, '૨. મ્યુચ્યુઅલ ફંડ'),
+                                          _legendBadge(Colors.orange, '૩. FD/બોન્ડ/PLI'),
+                                          _legendBadge(Colors.amber, '૪. સોનું/ચાંદી'),
+                                          _legendBadge(Colors.green, '૫. બેંક બચત'),
+                                          _legendBadge(Colors.purple, '૬. સ્થાવર સંપત્તિ (મકાન/ખેતર/દુકાન)'),
                                         ],
                                       ),
                                     ],
@@ -2005,8 +2883,25 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                                 ),
                               ),
 
-                            // ૧. ઇક્વિટી (Stocks & ETF)
-                            _buildAssetBreakdownCard(
+                            const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+                              child: Text(
+                                '💡 દરેક મુખ્ય કેટેગરી નીચે આપેલ [+] નિશાની પર ક્લિક કરીને તેની પેટા-કેટેગરીઓ જોઈ શકાશે:',
+                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.teal),
+                              ),
+                            ),
+
+                            // ૧. ડાયરેક્ટ ઇક્વિટી
+                            _buildExpandableCategoryCard(
+                              catIndex: 1,
+                              isExpanded: expandedCategories.contains(1),
+                              onToggle: () => setPageState(() {
+                                if (expandedCategories.contains(1)) {
+                                  expandedCategories.remove(1);
+                                } else {
+                                  expandedCategories.add(1);
+                                }
+                              }),
                               title: '૧. ડાયરેક્ટ ઇક્વિટી રોકાણ (Stocks & ETF)',
                               icon: Icons.candlestick_chart,
                               color: Colors.indigo,
@@ -2019,103 +2914,101 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                               ],
                             ),
 
-                            // ૨. મ્યુચ્યુઅલ ફંડ (Equity, Debt, Hybrid, ELSS)
-                            Card(
-                              margin: const EdgeInsets.symmetric(vertical: 6),
-                              child: Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(
-                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                      children: [
-                                        const Expanded(
-                                          child: Row(
-                                            children: [
-                                              Icon(Icons.pie_chart, color: Colors.teal, size: 20),
-                                              SizedBox(width: 8),
-                                              Expanded(child: Text('૨. મ્યુચ્યુઅલ ફંડ (Equity, Debt, Hybrid, ELSS)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5))),
-                                            ],
-                                          ),
-                                        ),
-                                        Text('₹${mfTotal.toStringAsFixed(0)} (${pctOfGrand(mfTotal).toStringAsFixed(1)}%)', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.teal, fontSize: 13.5)),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text('કુલ રોકાણોમાં હિસ્સો: ${pctOfInv(mfTotal).toStringAsFixed(1)}%', style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
-                                    const Divider(),
-                                    _subCategoryPctRow('• ઇક્વિટી મ્યુચ્યુઅલ ફંડ (Equity MF)', mfEquity, pctOfGrand(mfEquity), mfTotal > 0 ? (mfEquity / mfTotal) * 100 : 0, Colors.teal),
-                                    _subCategoryPctRow('• ડેબ્ટ મ્યુચ્યુઅલ ફંડ (Debt / Liquid MF)', mfDebt, pctOfGrand(mfDebt), mfTotal > 0 ? (mfDebt / mfTotal) * 100 : 0, Colors.blueGrey),
-                                    _subCategoryPctRow('• હાઇબ્રીડ મ્યુચ્યુઅલ ફંડ (Hybrid / Balanced)', mfHybrid, pctOfGrand(mfHybrid), mfTotal > 0 ? (mfHybrid / mfTotal) * 100 : 0, Colors.purple),
-                                    _subCategoryPctRow('• ELSS / ટેક્સ સેવર મ્યુચ્યુઅલ ફંડ', mfElss, pctOfGrand(mfElss), mfTotal > 0 ? (mfElss / mfTotal) * 100 : 0, Colors.indigo),
-                                    if (mfInvestmentsBox.isNotEmpty) ...[
-                                      const SizedBox(height: 6),
-                                      Align(
-                                        alignment: Alignment.centerRight,
-                                        child: TextButton.icon(
-                                          icon: const Icon(Icons.category, size: 15),
-                                          label: const Text('ફંડ પ્રમાણે Equity/Debt/Hybrid પ્રકાર બદલો', style: TextStyle(fontSize: 11.5)),
-                                          onPressed: () {
-                                            showDialog(
-                                              context: pageCtx,
-                                              builder: (dCtx) => StatefulBuilder(
-                                                builder: (dCtx, setDState) {
-                                                  final list = mfInvestmentsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
-                                                  return AlertDialog(
-                                                    title: const Text('મ્યુચ્યુઅલ ફંડનો પેટા-પ્રકાર સેટ કરો', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                                                    content: SizedBox(
-                                                      width: double.maxFinite,
-                                                      height: 300,
-                                                      child: ListView.builder(
-                                                        itemCount: list.length,
-                                                        itemBuilder: (_, idx) {
-                                                          final item = list[idx];
-                                                          final curCat = _classifyMfSubCategory(item);
-                                                          return ListTile(
-                                                            dense: true,
-                                                            title: Text(item['schemeName'] ?? '', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                                                            subtitle: Text('₹${item['investedAmount']}'),
-                                                            trailing: DropdownButton<String>(
-                                                              value: curCat,
-                                                              items: const [
-                                                                DropdownMenuItem(value: 'Equity', child: Text('Equity', style: TextStyle(fontSize: 12))),
-                                                                DropdownMenuItem(value: 'Debt', child: Text('Debt', style: TextStyle(fontSize: 12))),
-                                                                DropdownMenuItem(value: 'Hybrid', child: Text('Hybrid', style: TextStyle(fontSize: 12))),
-                                                                DropdownMenuItem(value: 'ELSS', child: Text('ELSS (80C)', style: TextStyle(fontSize: 12))),
-                                                              ],
-                                                              onChanged: (v) {
-                                                                if (v != null) {
-                                                                  item['mfSubCategory'] = v;
-                                                                  mfInvestmentsBox.put(item['id'], item);
-                                                                  setDState(() {});
-                                                                  setPageState(() {});
-                                                                  setState(() {});
-                                                                }
-                                                              },
-                                                            ),
-                                                          );
-                                                        },
-                                                      ),
+                            // ૨. મ્યુચ્યુઅલ ફંડ
+                            _buildExpandableCategoryCard(
+                              catIndex: 2,
+                              isExpanded: expandedCategories.contains(2),
+                              onToggle: () => setPageState(() {
+                                if (expandedCategories.contains(2)) {
+                                  expandedCategories.remove(2);
+                                } else {
+                                  expandedCategories.add(2);
+                                }
+                              }),
+                              title: '૨. મ્યુચ્યુઅલ ફંડ (Equity, Debt, Hybrid, ELSS)',
+                              icon: Icons.pie_chart,
+                              color: Colors.teal,
+                              totalAmount: mfTotal,
+                              pctOfTotalWealth: pctOfGrand(mfTotal),
+                              pctOfInvestments: pctOfInv(mfTotal),
+                              subItems: [
+                                {'label': 'ઇક્વિટી મ્યુચ્યુઅલ ફંડ (Equity MF)', 'amt': mfEquity, 'pct': pctOfGrand(mfEquity)},
+                                {'label': 'ડેબ્ટ મ્યુચ્યુઅલ ફંડ (Debt / Liquid MF)', 'amt': mfDebt, 'pct': pctOfGrand(mfDebt)},
+                                {'label': 'હાઇબ્રીડ મ્યુચ્યુઅલ ફંડ (Hybrid / Balanced)', 'amt': mfHybrid, 'pct': pctOfGrand(mfHybrid)},
+                                {'label': 'ELSS / ટેક્સ સેવર મ્યુચ્યુઅલ ફંડ', 'amt': mfElss, 'pct': pctOfGrand(mfElss)},
+                              ],
+                              extraBottomWidget: mfInvestmentsBox.isNotEmpty
+                                  ? Align(
+                                      alignment: Alignment.centerRight,
+                                      child: TextButton.icon(
+                                        icon: const Icon(Icons.category, size: 15),
+                                        label: const Text('ફંડ પ્રમાણે Equity/Debt/Hybrid પ્રકાર બદલો', style: TextStyle(fontSize: 11.5)),
+                                        onPressed: () {
+                                          showDialog(
+                                            context: pageCtx,
+                                            builder: (dCtx) => StatefulBuilder(
+                                              builder: (dCtx, setDState) {
+                                                final list = mfInvestmentsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
+                                                return AlertDialog(
+                                                  title: const Text('મ્યુચ્યુઅલ ફંડનો પેટા-પ્રકાર સેટ કરો', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                                                  content: SizedBox(
+                                                    width: double.maxFinite,
+                                                    height: 300,
+                                                    child: ListView.builder(
+                                                      itemCount: list.length,
+                                                      itemBuilder: (_, idx) {
+                                                        final item = list[idx];
+                                                        final curCat = _classifyMfSubCategory(item);
+                                                        return ListTile(
+                                                          dense: true,
+                                                          title: Text(item['schemeName'] ?? '', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                                                          subtitle: Text('₹${item['investedAmount']}'),
+                                                          trailing: DropdownButton<String>(
+                                                            value: curCat,
+                                                            items: const [
+                                                              DropdownMenuItem(value: 'Equity', child: Text('Equity', style: TextStyle(fontSize: 12))),
+                                                              DropdownMenuItem(value: 'Debt', child: Text('Debt', style: TextStyle(fontSize: 12))),
+                                                              DropdownMenuItem(value: 'Hybrid', child: Text('Hybrid', style: TextStyle(fontSize: 12))),
+                                                              DropdownMenuItem(value: 'ELSS', child: Text('ELSS (80C)', style: TextStyle(fontSize: 12))),
+                                                            ],
+                                                            onChanged: (v) {
+                                                              if (v != null) {
+                                                                item['mfSubCategory'] = v;
+                                                                mfInvestmentsBox.put(item['id'], item);
+                                                                setDState(() {});
+                                                                setPageState(() {});
+                                                                setState(() {});
+                                                              }
+                                                            },
+                                                          ),
+                                                        );
+                                                      },
                                                     ),
-                                                    actions: [
-                                                      ElevatedButton(onPressed: () => Navigator.pop(dCtx), child: const Text('પૂર્ણ')),
-                                                    ],
-                                                  );
-                                                },
-                                              ),
-                                            );
-                                          },
-                                        ),
+                                                  ),
+                                                  actions: [
+                                                    ElevatedButton(onPressed: () => Navigator.pop(dCtx), child: const Text('પૂર્ણ')),
+                                                  ],
+                                                );
+                                              },
+                                            ),
+                                          );
+                                        },
                                       ),
-                                    ],
-                                  ],
-                                ),
-                              ),
+                                    )
+                                  : null,
                             ),
 
-                            // ૩. FD, બોન્ડ, PLI, PPF/ પોસ્ટ ઓફિસ
-                            _buildAssetBreakdownCard(
+                            // ૩. FD, બોન્ડ, PLI, PPF
+                            _buildExpandableCategoryCard(
+                              catIndex: 3,
+                              isExpanded: expandedCategories.contains(3),
+                              onToggle: () => setPageState(() {
+                                if (expandedCategories.contains(3)) {
+                                  expandedCategories.remove(3);
+                                } else {
+                                  expandedCategories.add(3);
+                                }
+                              }),
                               title: '૩. FD, બોન્ડ, PLI અને બચત યોજનાઓ',
                               icon: Icons.account_balance_wallet,
                               color: Colors.orange.shade800,
@@ -2130,9 +3023,18 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                               ],
                             ),
 
-                            // ૪. વિવિધ ધાતુઓમાં રોકાણ (Gold 24K, 22K, Silver)
-                            _buildAssetBreakdownCard(
-                              title: '૪. વિવિધ ધાતુઓમાં રોકાણ (સોનું અને ચાંદી)',
+                            // ૪. કિંમતી ધાતુઓ
+                            _buildExpandableCategoryCard(
+                              catIndex: 4,
+                              isExpanded: expandedCategories.contains(4),
+                              onToggle: () => setPageState(() {
+                                if (expandedCategories.contains(4)) {
+                                  expandedCategories.remove(4);
+                                } else {
+                                  expandedCategories.add(4);
+                                }
+                              }),
+                              title: '૪. વિવિધ ધાતુઓમાં રોકાણ (સોનું, ચાંદી અને અન્ય)',
                               icon: Icons.monetization_on,
                               color: Colors.amber.shade800,
                               totalAmount: bullionTotal,
@@ -2142,142 +3044,91 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                                 {'label': 'સોનું 24K (Gold 24K)', 'amt': gold24Val, 'pct': pctOfGrand(gold24Val)},
                                 {'label': 'સોનું 22K (Gold 22K - દાગીના)', 'amt': gold22Val, 'pct': pctOfGrand(gold22Val)},
                                 {'label': 'ચાંદી (Silver)', 'amt': silverVal, 'pct': pctOfGrand(silverVal)},
+                                if (otherMetalsVal > 0)
+                                  {'label': 'અન્ય કિંમતી ધાતુઓ (Platinum / 18K / Custom)', 'amt': otherMetalsVal, 'pct': pctOfGrand(otherMetalsVal)},
                               ],
                             ),
 
-                            // ૫. બેંકના ખાતાઓમાં બચત અને મળતું વ્યાજ (%)
-                            Card(
-                              margin: const EdgeInsets.symmetric(vertical: 6),
-                              child: Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(
-                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                      children: [
-                                        const Expanded(
-                                          child: Row(
-                                            children: [
-                                              Icon(Icons.account_balance, color: Colors.green, size: 20),
-                                              SizedBox(width: 8),
-                                              Expanded(child: Text('૫. બેંક ખાતાઓમાં બચત અને મળતું વ્યાજ (%)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5))),
-                                            ],
-                                          ),
-                                        ),
-                                        Text('₹${liquidTotal.toStringAsFixed(0)} (${pctOfGrand(liquidTotal).toStringAsFixed(1)}%)', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green, fontSize: 13.5)),
-                                      ],
-                                    ),
-                                    const Divider(),
-                                    _taxSummaryRow('બેંક બચત ખાતાઓની કુલ સિલક:', '₹${bankSavings.toStringAsFixed(0)} (${pctOfGrand(bankSavings).toStringAsFixed(1)}%)', Colors.green.shade800, isBold: true),
-                                    const SizedBox(height: 4),
-                                    _taxSummaryRow('રોકડ સિલક (Cash Wallet):', '₹${cashBal.toStringAsFixed(0)} (${pctOfGrand(cashBal).toStringAsFixed(1)}%)', Colors.teal.shade700),
-                                    const SizedBox(height: 6),
-                                    Container(
-                                      padding: const EdgeInsets.all(10),
-                                      decoration: BoxDecoration(color: Colors.green.shade50, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.green.shade200)),
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Row(
-                                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                            children: [
-                                              Text('બેંક ખાતામાં મળતું વાર્ષિક વ્યાજ દર: ${bankIntRate.toStringAsFixed(2)}%', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5, color: Colors.green.shade900)),
-                                              InkWell(
-                                                onTap: () {
-                                                  final ctrl = TextEditingController(text: bankIntRate.toStringAsFixed(2));
-                                                  showDialog(
-                                                    context: pageCtx,
-                                                    builder: (c) => AlertDialog(
-                                                      title: const Text('બેંક ખાતાનો વાર્ષિક વ્યાજ દર (%)'),
-                                                      content: TextField(
-                                                        controller: ctrl,
-                                                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                                                        decoration: const InputDecoration(labelText: 'વાર્ષિક વ્યાજ દર % (દા.ત. 3.5 અથવા 7.0)'),
-                                                      ),
-                                                      actions: [
-                                                        TextButton(onPressed: () => Navigator.pop(c), child: const Text('રદ')),
-                                                        ElevatedButton(
-                                                          onPressed: () {
-                                                            final v = double.tryParse(ctrl.text) ?? 3.5;
-                                                            settingsBox.put('bankInterestRate', v);
-                                                            Navigator.pop(c);
-                                                            setPageState(() {});
-                                                            setState(() {});
-                                                          },
-                                                          child: const Text('સેવ કરો'),
-                                                        ),
-                                                      ],
-                                                    ),
-                                                  );
-                                                },
-                                                child: const Text('વ્યાજ % બદલો ✎', style: TextStyle(fontSize: 11.5, color: Colors.teal, fontWeight: FontWeight.bold)),
-                                              ),
-                                            ],
-                                          ),
-                                          const SizedBox(height: 4),
-                                          _taxSummaryRow('વાર્ષિક બેંક વ્યાજની રકમ:', '₹${annualBankIntRs.toStringAsFixed(0)} / વર્ષ (${bankIntRate.toStringAsFixed(1)}%)', Colors.green.shade900, isBold: true),
-                                          if ((data['recordedBankInterest'] as num) > 0)
-                                            Text('નોંધાયેલ બેંક વ્યાજ એન્ટ્રી: ₹${(data['recordedBankInterest'] as num).toStringAsFixed(0)}', style: const TextStyle(fontSize: 11, color: Colors.black54)),
-                                        ],
-                                      ),
-                                    ),
-                                    const SizedBox(height: 8),
-                                    const Text('ખાતાવાર સિલક અને ટકાવારી:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                                    const SizedBox(height: 4),
-                                    ...(data['bankAccountsBreakdown'] as List<Map<String, dynamic>>).map((acc) {
-                                      final double b = (acc['balance'] as num).toDouble();
-                                      final bool isC = acc['isCash'] == true;
-                                      final double intAmt = isC ? 0.0 : b * (bankIntRate / 100.0);
-                                      return Padding(
-                                        padding: const EdgeInsets.symmetric(vertical: 2),
-                                        child: Row(
-                                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                          children: [
-                                            Expanded(child: Text('• ${acc['name']}', style: const TextStyle(fontSize: 12))),
-                                            Text(
-                                              '₹${b.toStringAsFixed(0)} (${pctOfGrand(b).toStringAsFixed(1)}%)${!isC ? ' | વ્યાજ: ₹${intAmt.toStringAsFixed(0)}' : ''}',
-                                              style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600),
-                                            ),
-                                          ],
-                                        ),
-                                      );
-                                    }),
-                                  ],
-                                ),
-                              ),
+                            // ૫. બેંક ખાતાઓમાં બચત અને મળતું વ્યાજ
+                            _buildExpandableCategoryCard(
+                              catIndex: 5,
+                              isExpanded: expandedCategories.contains(5),
+                              onToggle: () => setPageState(() {
+                                if (expandedCategories.contains(5)) {
+                                  expandedCategories.remove(5);
+                                } else {
+                                  expandedCategories.add(5);
+                                }
+                              }),
+                              title: '૫. બેંક ખાતાઓમાં બચત અને મળતું વ્યાજ (%)',
+                              icon: Icons.account_balance,
+                              color: Colors.green,
+                              totalAmount: liquidTotal,
+                              pctOfTotalWealth: pctOfGrand(liquidTotal),
+                              pctOfInvestments: 0.0,
+                              subtitleOverride: 'સરેરાશ બેંક વ્યાજ દર: ${bankIntRate.toStringAsFixed(2)}% | વાર્ષિક વ્યાજ: ₹${annualBankIntRs.toStringAsFixed(0)}',
+                              subItems: [
+                                {'label': 'બેંક બચત ખાતાઓની કુલ સિલક', 'amt': bankSavings, 'pct': pctOfGrand(bankSavings)},
+                                {'label': 'રોકડ સિલક (Cash Wallet)', 'amt': cashBal, 'pct': pctOfGrand(cashBal)},
+                                ...(data['bankAccountsBreakdown'] as List<Map<String, dynamic>>).map((acc) {
+                                  final double b = (acc['balance'] as num).toDouble();
+                                  final bool isC = acc['isCash'] == true;
+                                  final double r = (acc['interestRate'] as num?)?.toDouble() ?? bankIntRate;
+                                  return {
+                                    'label': '${acc['name']}${!isC ? ' (વ્યાજ: ${r.toStringAsFixed(1)}%)' : ''}',
+                                    'amt': b,
+                                    'pct': pctOfGrand(b),
+                                  };
+                                }),
+                              ],
                             ),
 
-                            // ૬. સ્થાવર મિલકત (Physical Assets)
-                            if (physicalVal > 0)
-                              _buildAssetBreakdownCard(
-                                title: '૬. અન્ય સ્થાવર મિલકત (જમીન / મકાન / પ્લોટ)',
-                                icon: Icons.home_work,
-                                color: Colors.purple,
-                                totalAmount: physicalVal,
-                                pctOfTotalWealth: pctOfGrand(physicalVal),
-                                pctOfInvestments: pctOfInv(physicalVal),
-                                subItems: [
-                                  {'label': 'કુલ સ્થાવર મિલકત મૂલ્ય', 'amt': physicalVal, 'pct': pctOfGrand(physicalVal)},
-                                ],
-                              ),
+                            // ૬. છઠ્ઠી નવી મુખ્ય કેટેગરી: સ્થાવર સંપત્તિ / રિયલ એસ્ટેટ (મકાન, ખેતર, દુકાનો, પ્લોટ)
+                            _buildExpandableCategoryCard(
+                              catIndex: 6,
+                              isExpanded: expandedCategories.contains(6),
+                              onToggle: () => setPageState(() {
+                                if (expandedCategories.contains(6)) {
+                                  expandedCategories.remove(6);
+                                } else {
+                                  expandedCategories.add(6);
+                                }
+                              }),
+                              title: '૬. સ્થાવર સંપત્તિ અને રિયલ એસ્ટેટ (મકાન, ખેતર, દુકાનો)',
+                              icon: Icons.home_work,
+                              color: Colors.purple,
+                              totalAmount: physicalVal,
+                              pctOfTotalWealth: pctOfGrand(physicalVal),
+                              pctOfInvestments: pctOfInv(physicalVal),
+                              subItems: [
+                                {'label': 'મકાન / ફ્લેટ / રહેઠાણ (House / Flat)', 'amt': houseFlatVal, 'pct': pctOfGrand(houseFlatVal)},
+                                {'label': 'ખેતર / ખેતીની જમીન (Agricultural Land)', 'amt': farmLandVal, 'pct': pctOfGrand(farmLandVal)},
+                                {'label': 'દુકાનો / ઓફિસ / કોમર્શિયલ મિલકત (Shops / Office)', 'amt': shopOfficeVal, 'pct': pctOfGrand(shopOfficeVal)},
+                                {'label': 'પ્લોટ / બિન-ખેતી જમીન (Plots / Land)', 'amt': plotLandVal, 'pct': pctOfGrand(plotLandVal)},
+                                {'label': 'વાહન / અન્ય સ્થાવર મિલકત', 'amt': otherPhysicalVal, 'pct': pctOfGrand(otherPhysicalVal)},
+                              ],
+                            ),
                           ],
                         ),
                       ),
 
                       // =========================================================
-                      // ટેબ ૨: પ્રશ્નો દ્વારા રિસ્ક કેપેસિટી અને રોકાણ સરખામણી
+                      // ટેબ ૨: રિસ્ક કેપેસિટી પ્રશ્નો (એક પછી એક પ્રશ્નો + રીસેટ + લોક/અનલોક & કન્ટીન્યુ)
                       // =========================================================
                       SingleChildScrollView(
                         padding: const EdgeInsets.fromLTRB(12, 12, 12, 40),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
+                            // ટોપ હેડર + રીસેટ બટન
                             Card(
-                              color: riskColor.withOpacity(0.08),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: riskColor.withOpacity(0.4))),
+                              color: riskColor.withOpacity(isDark ? 0.25 : 0.10),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                side: BorderSide(color: riskColor.withOpacity(0.5)),
+                              ),
                               child: Padding(
-                                padding: const EdgeInsets.all(14),
+                                padding: const EdgeInsets.all(12),
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
@@ -2285,108 +3136,410 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                       children: [
                                         Expanded(
-                                          child: Text('તમારી રિસ્ક પ્રોફાઇલ: $riskProfileName', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5, color: riskColor)),
+                                          child: Text(
+                                            '🎯 રિસ્ક કેપેસિટી અને સ્ટ્રેટેજી મૂલ્યાંકન',
+                                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5, color: isDark ? Colors.white : riskColor),
+                                          ),
                                         ),
-                                        Chip(
-                                          backgroundColor: riskColor,
-                                          label: Text('સ્કોર: ${riskScore100.toStringAsFixed(0)}/100', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                                        OutlinedButton.icon(
+                                          style: OutlinedButton.styleFrom(
+                                            foregroundColor: Colors.redAccent,
+                                            side: const BorderSide(color: Colors.redAccent),
+                                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                          ),
+                                          icon: const Icon(Icons.refresh, size: 16),
+                                          label: const Text('રીસેટ કરો', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold)),
+                                          onPressed: () {
+                                            for (final q in riskQuestions) {
+                                              settingsBox.put(q['key'].toString(), 2);
+                                            }
+                                            settingsBox.put('isRiskStrategyLocked', false);
+                                            setPageState(() {
+                                              currentQuestionStep = 0;
+                                            });
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              const SnackBar(
+                                                content: Text('🔄 તમામ પ્રશ્નો રીસેટ થઈ ગયા છે. હવે ફરીથી મૂલ્યાંકન કરો!'),
+                                                backgroundColor: Colors.teal,
+                                              ),
+                                            );
+                                          },
                                         ),
                                       ],
                                     ),
                                     const SizedBox(height: 4),
-                                    const Text('નીચેના ૬ પ્રશ્નોના જવાબ આપો; એપ આપોઆપ તમારી રિસ્ક કેપેસિટી ગણીને કયા વિભાગમાં કેટલા ટકા રોકાણ હોવું જોઈએ તેની તમારા હાલના રોકાણ સાથે સરખામણી કરશે.', style: TextStyle(fontSize: 12, color: Colors.black87)),
+                                    Text(
+                                      isRiskStrategyLocked
+                                          ? '🔒 તમારી સ્ટ્રેટેજી હાલમાં લોક કરેલ છે. જો નવી સ્ટ્રેટેજી બનાવવી હોય તો નીચે "અનલોક" બટન દબાવી ફરીથી પ્રશ્નોના જવાબ આપો.'
+                                          : 'નીચે એક પછી એક આવતા ૮ પ્રશ્નો (નાણાકીય + મકાન/ખેતર/દુકાન રિયલ એસ્ટેટ) ના જવાબ આપો અને અંતે સ્ટ્રેટેજી લોક કરો.',
+                                      style: TextStyle(fontSize: 12, color: primaryTextColor),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+
+                            // જો હજુ પ્રશ્નો ચાલુ હોય (Step 0 થી 7) અને લોક ન હોય
+                            if (currentQuestionStep < riskQuestions.length && !isRiskStrategyLocked) ...[
+                              Card(
+                                elevation: 3,
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(16),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          Chip(
+                                            backgroundColor: Colors.teal.withOpacity(0.15),
+                                            label: Text(
+                                              'પ્રશ્ન ${currentQuestionStep + 1} / ${riskQuestions.length}',
+                                              style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.teal),
+                                            ),
+                                          ),
+                                          TextButton(
+                                            onPressed: () => setPageState(() => currentQuestionStep = riskQuestions.length),
+                                            child: const Text('સીધું પરિણામ જુઓ ⏭️', style: TextStyle(fontSize: 12)),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 6),
+                                      ClipRRect(
+                                        borderRadius: BorderRadius.circular(6),
+                                        child: LinearProgressIndicator(
+                                          value: (currentQuestionStep + 1) / riskQuestions.length,
+                                          minHeight: 8,
+                                          backgroundColor: Colors.grey.withOpacity(0.25),
+                                          color: Colors.teal,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 16),
+                                      Row(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Icon(riskQuestions[currentQuestionStep]['icon'] as IconData, color: Colors.teal, size: 26),
+                                          const SizedBox(width: 10),
+                                          Expanded(
+                                            child: Text(
+                                              riskQuestions[currentQuestionStep]['question'].toString(),
+                                              style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.bold),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 14),
+                                      ...List.generate(
+                                        (riskQuestions[currentQuestionStep]['options'] as List).length,
+                                        (optIdx) {
+                                          final String optText = (riskQuestions[currentQuestionStep]['options'] as List)[optIdx].toString();
+                                          final int selectedVal = (riskQuestions[currentQuestionStep]['val'] as num).toInt();
+                                          final bool isSelected = selectedVal == optIdx;
+                                          final String qKey = riskQuestions[currentQuestionStep]['key'].toString();
+
+                                          return Padding(
+                                            padding: const EdgeInsets.symmetric(vertical: 5),
+                                            child: InkWell(
+                                              borderRadius: BorderRadius.circular(12),
+                                              onTap: () {
+                                                settingsBox.put(qKey, optIdx);
+                                                setPageState(() {
+                                                  if (currentQuestionStep < riskQuestions.length - 1) {
+                                                    currentQuestionStep++;
+                                                  } else {
+                                                    currentQuestionStep = riskQuestions.length;
+                                                  }
+                                                });
+                                              },
+                                              child: Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                                                decoration: BoxDecoration(
+                                                  color: isSelected
+                                                      ? Colors.teal.withOpacity(isDark ? 0.35 : 0.14)
+                                                      : Colors.grey.withOpacity(0.08),
+                                                  borderRadius: BorderRadius.circular(12),
+                                                  border: Border.all(
+                                                    color: isSelected ? Colors.teal : Colors.grey.withOpacity(0.35),
+                                                    width: isSelected ? 2 : 1,
+                                                  ),
+                                                ),
+                                                child: Row(
+                                                  children: [
+                                                    Icon(
+                                                      isSelected ? Icons.radio_button_checked : Icons.radio_button_off,
+                                                      color: isSelected ? Colors.teal : Colors.grey,
+                                                    ),
+                                                    const SizedBox(width: 10),
+                                                    Expanded(
+                                                      child: Text(
+                                                        optText,
+                                                        style: TextStyle(
+                                                          fontSize: 13.5,
+                                                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                      const SizedBox(height: 16),
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          OutlinedButton.icon(
+                                            onPressed: currentQuestionStep > 0
+                                                ? () => setPageState(() => currentQuestionStep--)
+                                                : null,
+                                            icon: const Icon(Icons.arrow_back, size: 16),
+                                            label: const Text('પાછળ'),
+                                          ),
+                                          ElevatedButton.icon(
+                                            style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
+                                            onPressed: () {
+                                              setPageState(() {
+                                                if (currentQuestionStep < riskQuestions.length - 1) {
+                                                  currentQuestionStep++;
+                                                } else {
+                                                  currentQuestionStep = riskQuestions.length;
+                                                }
+                                              });
+                                            },
+                                            icon: const Icon(Icons.arrow_forward, size: 16),
+                                            label: Text(currentQuestionStep < riskQuestions.length - 1 ? 'આગળનો પ્રશ્ન' : 'મૂલ્યાંકન કરો'),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ] else ...[
+                              // છેલ્લે મૂલ્યાંકન કરી સ્ટ્રેટેજી બતાવે + લોક / અનલોક અને કન્ટીન્યુ વિકલ્પ
+                              Card(
+                                elevation: 3,
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(14),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              '✅ મૂલ્યાંકન પરિણામ: $riskProfileName',
+                                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: isDark ? Colors.tealAccent : riskColor),
+                                            ),
+                                          ),
+                                          Chip(
+                                            backgroundColor: riskColor,
+                                            label: Text(
+                                              'સ્કોર: ${riskScore100.toStringAsFixed(0)}/100',
+                                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const Divider(),
+                                      const Text(
+                                        'તમારા જવાબો (નાણાકીય + રિયલ એસ્ટેટ) ના આધારે સૂચિત સ્ટ્રેટેજી પ્રમાણ (%):',
+                                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      ...(isRiskStrategyLocked ? activeLockedRiskStrategy : evaluatedPct).entries.map((e) {
+                                        final double targetAmt = wealthBase * (e.value / 100.0);
+                                        return Padding(
+                                          padding: const EdgeInsets.symmetric(vertical: 4),
+                                          child: Row(
+                                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                            children: [
+                                              Expanded(child: Text('• ${e.key}', style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600))),
+                                              Text(
+                                                '${e.value.toStringAsFixed(1)}% (₹${targetAmt.toStringAsFixed(0)})',
+                                                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.teal),
+                                              ),
+                                            ],
+                                          ),
+                                        );
+                                      }),
+                                      const SizedBox(height: 14),
+                                      if (!isRiskStrategyLocked)
+                                        Row(
+                                          children: [
+                                            OutlinedButton.icon(
+                                              icon: const Icon(Icons.edit_note, size: 18),
+                                              label: const Text('પ્રશ્નો બદલો'),
+                                              onPressed: () => setPageState(() => currentQuestionStep = 0),
+                                            ),
+                                            const SizedBox(width: 10),
+                                            Expanded(
+                                              child: ElevatedButton.icon(
+                                                style: ElevatedButton.styleFrom(
+                                                  backgroundColor: Colors.teal,
+                                                  foregroundColor: Colors.white,
+                                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                                                ),
+                                                icon: const Icon(Icons.lock),
+                                                label: const Text('લોક અને કન્ટીન્યુ (Lock & Continue)', style: TextStyle(fontWeight: FontWeight.bold)),
+                                                onPressed: () {
+                                                  // જૂની સ્ટ્રેટેજી કાઢી નવી સ્ટ્રેટેજી સેવ અને લોક કરો, અને ટેબ ૩ પર જાઓ
+                                                  settingsBox.put('lockedRiskStrategy', evaluatedPct);
+                                                  settingsBox.put('isRiskStrategyLocked', true);
+                                                  setPageState(() {});
+                                                  DefaultTabController.of(tabCtx).animateTo(2);
+                                                  ScaffoldMessenger.of(context).showSnackBar(
+                                                    const SnackBar(
+                                                      content: Text('🔒 નવી સ્ટ્રેટેજી લોક થઈ ગઈ છે! હવે ટેબ ૩ માં હાલના રોકાણ સાથે સરખામણી જુઓ.'),
+                                                      backgroundColor: Colors.teal,
+                                                    ),
+                                                  );
+                                                },
+                                              ),
+                                            ),
+                                          ],
+                                        )
+                                      else
+                                        Column(
+                                          children: [
+                                            Container(
+                                              width: double.infinity,
+                                              padding: const EdgeInsets.all(10),
+                                              decoration: BoxDecoration(
+                                                color: Colors.green.withOpacity(0.15),
+                                                borderRadius: BorderRadius.circular(10),
+                                                border: Border.all(color: Colors.green),
+                                              ),
+                                              child: const Row(
+                                                children: [
+                                                  Icon(Icons.lock_clock, color: Colors.green),
+                                                  SizedBox(width: 8),
+                                                  Expanded(
+                                                    child: Text(
+                                                      'આ સ્ટ્રેટેજી લોક કરેલ છે. જો સ્ટ્રેટેજી બદલવી હોય તો "અનલોક કરો" દબાવી ફરીથી પ્રશ્નોના જવાબ આપો.',
+                                                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                            const SizedBox(height: 10),
+                                            Row(
+                                              children: [
+                                                Expanded(
+                                                  child: OutlinedButton.icon(
+                                                    style: OutlinedButton.styleFrom(
+                                                      foregroundColor: Colors.orange.shade800,
+                                                      side: BorderSide(color: Colors.orange.shade800),
+                                                      padding: const EdgeInsets.symmetric(vertical: 11),
+                                                    ),
+                                                    icon: const Icon(Icons.lock_open),
+                                                    label: const Text('અનલોક કરી નવી બનાવો', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                                    onPressed: () {
+                                                      settingsBox.put('isRiskStrategyLocked', false);
+                                                      setPageState(() {
+                                                        currentQuestionStep = 0;
+                                                      });
+                                                    },
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 8),
+                                                Expanded(
+                                                  child: ElevatedButton.icon(
+                                                    style: ElevatedButton.styleFrom(
+                                                      backgroundColor: Colors.teal,
+                                                      foregroundColor: Colors.white,
+                                                      padding: const EdgeInsets.symmetric(vertical: 11),
+                                                    ),
+                                                    icon: const Icon(Icons.compare_arrows),
+                                                    label: const Text('ટેબ ૩ સરખામણી જુઓ', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                                    onPressed: () {
+                                                      DefaultTabController.of(tabCtx).animateTo(2);
+                                                    },
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+
+                      // =========================================================
+                      // ટેબ ૩: લોક કરેલ રિસ્ક સ્ટ્રેટેજી અને હાલના રોકાણની સરખામણી
+                      // =========================================================
+                      SingleChildScrollView(
+                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 40),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Card(
+                              color: adaptiveTintBg(Colors.teal),
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            isRiskStrategyLocked
+                                                ? '🔒 લોક કરેલ રિસ્ક સ્ટ્રેટેજી vs હાલનું રોકાણ'
+                                                : '⚠️ સ્ટ્રેટેજી હજુ ટેબ ૨ માં લોક કરેલ નથી (હાલનો પ્રિવ્યુ)',
+                                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                                          ),
+                                          const SizedBox(height: 3),
+                                          Text(
+                                            'કુલ સંપત્તિ (₹${wealthBase.toStringAsFixed(0)}) ના આધારે સરખામણી (રિયલ એસ્ટેટ સહિત)',
+                                            style: TextStyle(fontSize: 11.5, color: secondaryTextColor),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    TextButton.icon(
+                                      icon: Icon(isRiskStrategyLocked ? Icons.lock_open : Icons.quiz, size: 16),
+                                      label: Text(isRiskStrategyLocked ? 'અનલોક / બદલો' : 'ટેબ ૨ માં લોક કરો', style: const TextStyle(fontSize: 11.5)),
+                                      onPressed: () {
+                                        if (isRiskStrategyLocked) {
+                                          settingsBox.put('isRiskStrategyLocked', false);
+                                          setPageState(() => currentQuestionStep = 0);
+                                        }
+                                        DefaultTabController.of(tabCtx).animateTo(1);
+                                      },
+                                    ),
                                   ],
                                 ),
                               ),
                             ),
                             const SizedBox(height: 8),
-
-                            // પ્રશ્નાવલી કાર્ડ
                             Card(
                               child: Padding(
                                 padding: const EdgeInsets.all(12),
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    const Text('📝 રિસ્ક કેપેસિટી મૂલ્યાંકન પ્રશ્નો:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.teal)),
+                                    const Text('⚖️ સ્ટ્રેટેજી અને હાલના રોકાણની વિભાગવાર સરખામણી:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                                     const Divider(),
-                                    _buildRiskQuestionDropdown(
-                                      question: '૧. તમારી ઉંમરનો ગાળો શું છે?',
-                                      currentVal: q1Age,
-                                      options: const ['60+ વર્ષ (નિવૃત્ત)', '45 થી 60 વર્ષ', '30 થી 45 વર્ષ', '30 વર્ષથી ઓછી'],
-                                      onChanged: (v) {
-                                        settingsBox.put('risk_q1_age', v);
-                                        setPageState(() {});
-                                      },
-                                    ),
-                                    _buildRiskQuestionDropdown(
-                                      question: '૨. તમે કેટલા સમયગાળા માટે રોકાણ જાળવી શકો છો?',
-                                      currentVal: q2Horizon,
-                                      options: const ['1 થી 3 વર્ષ (ટૂંકા ગાળા)', '3 થી 5 વર્ષ (મધ્યમ ગાળા)', '5 થી 10 વર્ષ (લાંબા ગાળા)', '10+ વર્ષ (લાંબા ગાળાનું વેલ્થ ક્રિએશન)'],
-                                      onChanged: (v) {
-                                        settingsBox.put('risk_q2_horizon', v);
-                                        setPageState(() {});
-                                      },
-                                    ),
-                                    _buildRiskQuestionDropdown(
-                                      question: '૩. જો શેરબજાર અચાનક 15-20% ઘટે તો તમે શું કરશો?',
-                                      currentVal: q3DropReact,
-                                      options: const ['નુકસાનથી બચવા તરત વેચી દઈશ', 'થોડું વેચીને FD માં મૂકીશ', 'રોકાણ જાળવી રાખીશ (Hold)', 'ઘટાડામાં વધુ ખરીદી (Buy More) કરીશ'],
-                                      onChanged: (v) {
-                                        settingsBox.put('risk_q3_drop', v);
-                                        setPageState(() {});
-                                      },
-                                    ),
-                                    _buildRiskQuestionDropdown(
-                                      question: '૪. તમારી આવકની સ્થિરતા કેવી છે?',
-                                      currentVal: q4IncomeStab,
-                                      options: const ['અનિશ્ચિત આવક', 'સામાન્ય ખાનગી/ધંધાકીય આવક', 'સ્થિર માસિક પગાર / સારો વ્યવસાય', 'સરકારી/સુરક્ષિત પગાર + વધારાની આવક'],
-                                      onChanged: (v) {
-                                        settingsBox.put('risk_q4_income', v);
-                                        setPageState(() {});
-                                      },
-                                    ),
-                                    _buildRiskQuestionDropdown(
-                                      question: '૫. તમારી પાસે 6 મહિનાના ખર્ચ જેટલું ઇમરજન્સી ફંડ છે?',
-                                      currentVal: q5Emergency,
-                                      options: const ['ના, બિલકુલ નથી', '1-2 મહિના પૂરતું છે', '3-5 મહિના પૂરતું છે', 'હા, 6+ મહિનાનું સંપૂર્ણ સુરક્ષિત ફંડ છે'],
-                                      onChanged: (v) {
-                                        settingsBox.put('risk_q5_emerg', v);
-                                        setPageState(() {});
-                                      },
-                                    ),
-                                    _buildRiskQuestionDropdown(
-                                      question: '૬. તમારા રોકાણનો મુખ્ય હેતુ શું છે?',
-                                      currentVal: q6Goal,
-                                      options: const ['માત્ર મૂડીની સુરક્ષા (6-7% વળતર)', 'નિયમિત વ્યાજ અને સુરક્ષા (8-9% વળતર)', 'સંતુલિત વૃદ્ધિ અને ટેક્સ બચત (10-12% વળતર)', 'ઉચ્ચ સંપત્તિ સર્જન (13-16%+ વળતર)'],
-                                      onChanged: (v) {
-                                        settingsBox.put('risk_q6_goal', v);
-                                        setPageState(() {});
-                                      },
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-
-                            const SizedBox(height: 10),
-                            // પ્રશ્નોના વિશ્લેષણ મુજબ ભલામણ vs વાસ્તવિક રોકાણ સરખામણી કાર્ડ
-                            Card(
-                              child: Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const Text('⚖️ પ્રશ્નોના વિશ્લેષણ મુજબ ભલામણ vs તમારું હાલનું રોકાણ:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                                    const SizedBox(height: 4),
-                                    Text('કુલ નાણાકીય મૂડી (₹${financialBase.toStringAsFixed(0)}) ના આધારે સરખામણી:', style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
-                                    const Divider(),
-                                    ...recommendedPct.entries.map((entry) {
+                                    ...activeLockedRiskStrategy.entries.map((entry) {
                                       final String cat = entry.key;
                                       final double recPct = entry.value;
-                                      final double actPct = actualForRiskMap[cat] ?? 0.0;
+                                      final double actPct = actualPctForRiskMap[cat] ?? 0.0;
                                       final double actRs = actualRsForRiskMap[cat] ?? 0.0;
-                                      final double targetRs = financialBase * (recPct / 100.0);
+                                      final double targetRs = wealthBase * (recPct / 100.0);
                                       final double diffPct = actPct - recPct;
                                       final double diffRs = actRs - targetRs;
                                       final bool isAligned = diffPct.abs() <= 5.0;
@@ -2395,9 +3548,11 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                                         margin: const EdgeInsets.symmetric(vertical: 6),
                                         padding: const EdgeInsets.all(10),
                                         decoration: BoxDecoration(
-                                          color: isAligned ? Colors.green.withOpacity(0.06) : Colors.orange.withOpacity(0.07),
+                                          color: isAligned
+                                              ? Colors.green.withOpacity(isDark ? 0.18 : 0.06)
+                                              : Colors.orange.withOpacity(isDark ? 0.18 : 0.07),
                                           borderRadius: BorderRadius.circular(10),
-                                          border: Border.all(color: isAligned ? Colors.green.shade300 : Colors.orange.shade300),
+                                          border: Border.all(color: isAligned ? Colors.green.shade400 : Colors.orange.shade400),
                                         ),
                                         child: Column(
                                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -2425,8 +3580,14 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                                             Row(
                                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                               children: [
-                                                Text('ભલામણ: ${recPct.toStringAsFixed(1)}% (₹${targetRs.toStringAsFixed(0)})', style: const TextStyle(fontSize: 12, color: Colors.teal, fontWeight: FontWeight.w600)),
-                                                Text('હાલમાં: ${actPct.toStringAsFixed(1)}% (₹${actRs.toStringAsFixed(0)})', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                                                Text(
+                                                  'સ્ટ્રેટેજી: ${recPct.toStringAsFixed(1)}% (₹${targetRs.toStringAsFixed(0)})',
+                                                  style: const TextStyle(fontSize: 12, color: Colors.teal, fontWeight: FontWeight.w600),
+                                                ),
+                                                Text(
+                                                  'હાલમાં: ${actPct.toStringAsFixed(1)}% (₹${actRs.toStringAsFixed(0)})',
+                                                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                                ),
                                               ],
                                             ),
                                             const SizedBox(height: 4),
@@ -2435,7 +3596,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                                               child: LinearProgressIndicator(
                                                 value: (actPct / 100.0).clamp(0.0, 1.0),
                                                 minHeight: 7,
-                                                backgroundColor: Colors.grey.shade200,
+                                                backgroundColor: Colors.grey.withOpacity(0.25),
                                                 color: isAligned ? Colors.green : Colors.orange.shade800,
                                               ),
                                             ),
@@ -2443,9 +3604,13 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                                               const SizedBox(height: 4),
                                               Text(
                                                 diffRs > 0
-                                                    ? '💡 સૂચન: રિસ્ક પ્રોફાઇલ મુજબ આ વિભાગમાં ₹${diffRs.abs().toStringAsFixed(0)} વધુ રોકાયેલ છે.'
-                                                    : '💡 સૂચન: રિસ્ક પ્રોફાઇલ મુજબ આ વિભાગમાં હજુ ₹${diffRs.abs().toStringAsFixed(0)} નું રોકાણ વધારવું જોઈએ.',
-                                                style: TextStyle(fontSize: 11.5, color: Colors.orange.shade900, fontWeight: FontWeight.w600),
+                                                    ? '💡 સૂચન: સ્ટ્રેટેજી મુજબ આ વિભાગમાં ₹${diffRs.abs().toStringAsFixed(0)} વધુ રોકાયેલ છે.'
+                                                    : '💡 સૂચન: સ્ટ્રેટેજી મુજબ આ વિભાગમાં હજુ ₹${diffRs.abs().toStringAsFixed(0)} નું રોકાણ વધારવું જોઈએ.',
+                                                style: TextStyle(
+                                                  fontSize: 11.5,
+                                                  color: isDark ? Colors.amberAccent : Colors.orange.shade900,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
                                               ),
                                             ],
                                           ],
@@ -2461,7 +3626,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                       ),
 
                       // =========================================================
-                      // ટેબ ૩: વ્યક્તિ પોતાની સ્ટ્રેટેજી બનાવી શકે અને રોકાણ સરખાવી શકે
+                      // ટેબ ૪: મારી કસ્ટમ સ્ટ્રેટેજી (અગાઉની ટેબ ૩ હવે ટેબ ૪ માં + રિયલ એસ્ટેટ સ્લાઇડર)
                       // =========================================================
                       SingleChildScrollView(
                         padding: const EdgeInsets.fromLTRB(12, 12, 12, 40),
@@ -2469,7 +3634,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Card(
-                              color: Colors.indigo.shade50,
+                              color: adaptiveTintBg(Colors.indigo),
                               child: Padding(
                                 padding: const EdgeInsets.all(12),
                                 child: Column(
@@ -2478,16 +3643,25 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                                     Row(
                                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                       children: [
-                                        const Expanded(
-                                          child: Text('🎯 મારી કસ્ટમ રોકાણ સ્ટ્રેટેજી (Target Allocation %)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.indigo)),
+                                        Expanded(
+                                          child: Text(
+                                            '🎯 મારી કસ્ટમ રોકાણ સ્ટ્રેટેજી (Target Allocation %)',
+                                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: adaptiveAccentText(Colors.indigo)),
+                                          ),
                                         ),
                                         Chip(
                                           backgroundColor: (totalStrategyPct - 100.0).abs() < 0.5 ? Colors.green : Colors.red,
-                                          label: Text('કુલ: ${totalStrategyPct.toStringAsFixed(0)}%', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                                          label: Text(
+                                            'કુલ: ${totalStrategyPct.toStringAsFixed(0)}%',
+                                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                                          ),
                                         ),
                                       ],
                                     ),
-                                    const Text('તમે કયા વિભાગમાં કેટલા ટકા (%) રોકાણ કરવા માંગો છો તે સ્લાઇડરથી નક્કી કરો. એપ તમારા હાલના રોકાણ સાથે તેની લાઇવ સરખામણી બતાવશે.', style: TextStyle(fontSize: 11.5, color: Colors.black87)),
+                                    Text(
+                                      'તમે કયા વિભાગમાં કેટલા ટકા (%) રોકાણ કરવા માંગો છો તે સ્લાઇડરથી નક્કી કરો. એપ તમારા હાલના રોકાણ સાથે તેની લાઇવ સરખામણી બતાવશે.',
+                                      style: TextStyle(fontSize: 11.5, color: primaryTextColor),
+                                    ),
                                     const Divider(),
                                     _buildStrategySliderRow(
                                       label: '૧. ડાયરેક્ટ ઇક્વિટી (Stocks & ETF)',
@@ -2537,13 +3711,26 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                                         setPageState(() {});
                                       },
                                     ),
+                                    _buildStrategySliderRow(
+                                      label: '૭. સ્થાવર સંપત્તિ (મકાન / ખેતર / દુકાનો)',
+                                      value: stRealEstate,
+                                      onChanged: (v) {
+                                        settingsBox.put('strat_real_estate', v.roundToDouble());
+                                        setPageState(() {});
+                                      },
+                                    ),
                                     if ((totalStrategyPct - 100.0).abs() >= 0.5)
                                       Padding(
                                         padding: const EdgeInsets.only(top: 6),
                                         child: Row(
                                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                           children: [
-                                            Text('⚠️ કુલ સરવાળો 100% હોવો જોઈએ (હાલ: ${totalStrategyPct.toStringAsFixed(0)}%)', style: const TextStyle(color: Colors.red, fontSize: 11.5, fontWeight: FontWeight.bold)),
+                                            Expanded(
+                                              child: Text(
+                                                '⚠️ કુલ સરવાળો 100% હોવો જોઈએ (હાલ: ${totalStrategyPct.toStringAsFixed(0)}%)',
+                                                style: const TextStyle(color: Colors.redAccent, fontSize: 11.5, fontWeight: FontWeight.bold),
+                                              ),
+                                            ),
                                             ElevatedButton(
                                               style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 10)),
                                               onPressed: () {
@@ -2554,13 +3741,15 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                                                   final d3 = (stMfDebtHyb * factor).roundToDouble();
                                                   final d4 = (stFixed * factor).roundToDouble();
                                                   final d5 = (stBullion * factor).roundToDouble();
-                                                  final d6 = math.max(0.0, 100.0 - (d1 + d2 + d3 + d4 + d5));
+                                                  final d6 = (stBank * factor).roundToDouble();
+                                                  final d7 = math.max(0.0, 100.0 - (d1 + d2 + d3 + d4 + d5 + d6));
                                                   settingsBox.put('strat_direct_eq', d1);
                                                   settingsBox.put('strat_mf_eq', d2);
                                                   settingsBox.put('strat_mf_debthyb', d3);
                                                   settingsBox.put('strat_fixed', d4);
                                                   settingsBox.put('strat_bullion', d5);
                                                   settingsBox.put('strat_bank', d6);
+                                                  settingsBox.put('strat_real_estate', d7);
                                                   setPageState(() {});
                                                 }
                                               },
@@ -2573,16 +3762,14 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                                 ),
                               ),
                             ),
-
                             const SizedBox(height: 10),
-                            // કસ્ટમ સ્ટ્રેટેજી vs વાસ્તવિક રોકાણ સરખામણી કાર્ડ
                             Card(
                               child: Padding(
                                 padding: const EdgeInsets.all(12),
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    const Text('📊 મારી સ્ટ્રેટેજી vs એપમાં થયેલ વાસ્તવિક રોકાણ સરખામણી:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                                    const Text('📊 મારી કસ્ટમ સ્ટ્રેટેજી vs વાસ્તવિક રોકાણ સરખામણી:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                                     const Divider(),
                                     ...[
                                       {'name': '૧. ડાયરેક્ટ ઇક્વિટી (Stocks & ETF)', 'targetPct': stDirectEq, 'actualRs': directEquity},
@@ -2591,12 +3778,13 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                                       {'name': '૪. FD / બોન્ડ / PLI / PPF', 'targetPct': stFixed, 'actualRs': fixedTotal},
                                       {'name': '૫. સોનું અને ચાંદી (ધાતુઓ)', 'targetPct': stBullion, 'actualRs': bullionTotal},
                                       {'name': '૬. બેંક બચત ખાતું અને રોકડ', 'targetPct': stBank, 'actualRs': liquidTotal},
+                                      {'name': '૭. સ્થાવર સંપત્તિ (મકાન / ખેતર / દુકાનો)', 'targetPct': stRealEstate, 'actualRs': physicalVal},
                                     ].map((item) {
                                       final String title = item['name'] as String;
                                       final double tPct = (item['targetPct'] as num).toDouble();
                                       final double aRs = (item['actualRs'] as num).toDouble();
-                                      final double aPct = financialBase > 0 ? (aRs / financialBase) * 100.0 : 0.0;
-                                      final double tRs = financialBase * (tPct / 100.0);
+                                      final double aPct = wealthBase > 0 ? (aRs / wealthBase) * 100.0 : 0.0;
+                                      final double tRs = wealthBase * (tPct / 100.0);
                                       final double diffRs = aRs - tRs;
                                       final double diffPct = aPct - tPct;
                                       final bool isMatch = diffPct.abs() <= 4.0;
@@ -2605,7 +3793,9 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                                         margin: const EdgeInsets.symmetric(vertical: 5),
                                         padding: const EdgeInsets.all(10),
                                         decoration: BoxDecoration(
-                                          color: isMatch ? Colors.teal.withOpacity(0.06) : Colors.deepOrange.withOpacity(0.06),
+                                          color: isMatch
+                                              ? Colors.teal.withOpacity(isDark ? 0.18 : 0.06)
+                                              : Colors.deepOrange.withOpacity(isDark ? 0.18 : 0.06),
                                           borderRadius: BorderRadius.circular(10),
                                           border: Border.all(color: isMatch ? Colors.teal.shade300 : Colors.deepOrange.shade200),
                                         ),
@@ -2623,7 +3813,9 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                                                   style: TextStyle(
                                                     fontSize: 11,
                                                     fontWeight: FontWeight.bold,
-                                                    color: isMatch ? Colors.teal.shade800 : Colors.deepOrange.shade800,
+                                                    color: isMatch
+                                                        ? (isDark ? Colors.tealAccent : Colors.teal.shade800)
+                                                        : (isDark ? Colors.orangeAccent : Colors.deepOrange.shade800),
                                                   ),
                                                 ),
                                               ],
@@ -2632,7 +3824,10 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                                             Row(
                                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                               children: [
-                                                Text('મારી સ્ટ્રેટેજી: ${tPct.toStringAsFixed(1)}% (₹${tRs.toStringAsFixed(0)})', style: const TextStyle(fontSize: 11.5, color: Colors.indigo, fontWeight: FontWeight.w600)),
+                                                Text(
+                                                  'મારી સ્ટ્રેટેજી: ${tPct.toStringAsFixed(1)}% (₹${tRs.toStringAsFixed(0)})',
+                                                  style: TextStyle(fontSize: 11.5, color: isDark ? Colors.indigo.shade200 : Colors.indigo, fontWeight: FontWeight.w600),
+                                                ),
                                                 Text('વાસ્તવિક: ${aPct.toStringAsFixed(1)}% (₹${aRs.toStringAsFixed(0)})', style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold)),
                                               ],
                                             ),
@@ -2643,7 +3838,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                                                   : (diffRs > 0
                                                       ? 'સ્ટ્રેટેજી કરતાં ₹${diffRs.abs().toStringAsFixed(0)} વધુ રોકાયેલ છે.'
                                                       : 'સ્ટ્રેટેજી મુજબ કરવા હજુ ₹${diffRs.abs().toStringAsFixed(0)} રોકવાના બાકી છે.'),
-                                              style: const TextStyle(fontSize: 11, color: Colors.black87),
+                                              style: TextStyle(fontSize: 11, color: secondaryTextColor),
                                             ),
                                           ],
                                         ),
@@ -2656,18 +3851,351 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                           ],
                         ),
                       ),
+
+                      // =========================================================
+                      // ટેબ ૫: સ્ટ્રેટેજી પ્રમાણે જુદા જુદા સમયે (1, 5, 10, 20, 30 વર્ષ) રોકાણની કુલ કિંમત (ઓટો / મેન્યુઅલ દર)
+                      // =========================================================
+                      SingleChildScrollView(
+                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 40),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Card(
+                              color: adaptiveTintBg(Colors.teal),
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                      '🚀 ભવિષ્યનું રોકાણ મૂલ્ય અંદાજ (1, 5, 10, 20, 30 વર્ષ)',
+                                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5),
+                                    ),
+                                    const SizedBox(height: 6),
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: DropdownButtonFormField<String>(
+                                            initialValue: projectionStrategySource,
+                                            isExpanded: true,
+                                            decoration: const InputDecoration(
+                                              labelText: 'કઈ સ્ટ્રેટેજી મુજબ ગણતરી કરવી?',
+                                              isDense: true,
+                                              border: OutlineInputBorder(),
+                                            ),
+                                            items: const [
+                                              DropdownMenuItem(value: 'locked_risk', child: Text('રિસ્ક સ્ટ્રેટેજી (ટેબ ૨/૩)', style: TextStyle(fontSize: 12))),
+                                              DropdownMenuItem(value: 'custom_strat', child: Text('મારી કસ્ટમ સ્ટ્રેટેજી (ટેબ ૪)', style: TextStyle(fontSize: 12))),
+                                            ],
+                                            onChanged: (v) {
+                                              if (v != null) {
+                                                settingsBox.put('proj_strategy_source', v);
+                                                setPageState(() => projectionStrategySource = v);
+                                              }
+                                            },
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 10),
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        const Text('વાર્ષિક વધવાનો દર (Growth Rate):', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
+                                        SegmentedButton<String>(
+                                          segments: const [
+                                            ButtonSegment(value: 'auto', label: Text('ઓટો દર', style: TextStyle(fontSize: 11.5))),
+                                            ButtonSegment(value: 'manual', label: Text('મેન્યુઅલ દર', style: TextStyle(fontSize: 11.5))),
+                                          ],
+                                          selected: {projectionGrowthMode},
+                                          onSelectionChanged: (s) {
+                                            settingsBox.put('proj_growth_mode', s.first);
+                                            setPageState(() => projectionGrowthMode = s.first);
+                                          },
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 8),
+                                    if (projectionGrowthMode == 'auto')
+                                      Container(
+                                        padding: const EdgeInsets.all(10),
+                                        decoration: BoxDecoration(
+                                          color: Colors.teal.withOpacity(0.12),
+                                          borderRadius: BorderRadius.circular(8),
+                                        ),
+                                        child: Text(
+                                          '✨ ઓટો સ્ટ્રેટેજી વેઇટેડ વાર્ષિક વૃદ્ધિ દર: ${autoWeightedRate.toStringAsFixed(2)}% પ્રતિ વર્ષ\n'
+                                          '(ઇક્વિટી 14%, મકાન/ખેતર/દુકાન 11.5%, સોનું 10.5%, ડેબ્ટ 8.5%, FD 7.2%, બેંક ${bankIntRate.toStringAsFixed(1)}% ના આધારે)',
+                                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                                        ),
+                                      )
+                                    else
+                                      Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                            children: [
+                                              const Text('મેન્યુઅલ વાર્ષિક વધવાનો દર (%):', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold)),
+                                              Text('${manualAnnualGrowthRate.toStringAsFixed(1)}% પ્રતિ વર્ષ', style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold, color: Colors.teal)),
+                                            ],
+                                          ),
+                                          Slider(
+                                            value: manualAnnualGrowthRate.clamp(1.0, 35.0),
+                                            min: 1.0,
+                                            max: 35.0,
+                                            divisions: 68,
+                                            label: '${manualAnnualGrowthRate.toStringAsFixed(1)}%',
+                                            onChanged: (v) {
+                                              settingsBox.put('proj_manual_rate', v);
+                                              setPageState(() => manualAnnualGrowthRate = v);
+                                            },
+                                          ),
+                                        ],
+                                      ),
+                                    const Divider(),
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Text('હાલની કુલ મૂડી: ₹${baseProjectionCapital.toStringAsFixed(0)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
+                                        TextButton.icon(
+                                          icon: const Icon(Icons.add_chart, size: 16),
+                                          label: Text('માસિક SIP ઉમેરો: ₹${monthlySipAddition.toStringAsFixed(0)} ✎', style: const TextStyle(fontSize: 12)),
+                                          onPressed: () {
+                                            final ctrl = TextEditingController(text: monthlySipAddition.toStringAsFixed(0));
+                                            showDialog(
+                                              context: pageCtx,
+                                              builder: (c) => AlertDialog(
+                                                title: const Text('નિયમિત માસિક નવું રોકાણ (SIP)'),
+                                                content: TextField(
+                                                  controller: ctrl,
+                                                  keyboardType: TextInputType.number,
+                                                  decoration: const InputDecoration(labelText: 'દર મહિને ઉમેરાતી રકમ (₹)'),
+                                                ),
+                                                actions: [
+                                                  TextButton(onPressed: () => Navigator.pop(c), child: const Text('રદ')),
+                                                  ElevatedButton(
+                                                    onPressed: () {
+                                                      final v = double.tryParse(ctrl.text) ?? 0.0;
+                                                      settingsBox.put('proj_monthly_sip', v);
+                                                      setPageState(() => monthlySipAddition = v);
+                                                      Navigator.pop(c);
+                                                    },
+                                                    child: const Text('સેવ કરો'),
+                                                  ),
+                                                ],
+                                              ),
+                                            );
+                                          },
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+
+                            // 1, 5, 10, 20, 30 વર્ષ માટે ગ્રોથ બાર ચાર્ટ
+                            Card(
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      '📈 1, 5, 10, 20 અને 30 વર્ષમાં સંપત્તિ વૃદ્ધિ આલેખ (@ ${effectiveProjectionRate.toStringAsFixed(1)}%):',
+                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                                    ),
+                                    const SizedBox(height: 12),
+                                    SizedBox(
+                                      height: 180,
+                                      child: BarChart(
+                                        BarChartData(
+                                          alignment: BarChartAlignment.spaceAround,
+                                          maxY: calculateFutureWealth(baseProjectionCapital, effectiveProjectionRate, 30, monthlySipAddition) * 1.15,
+                                          barGroups: List.generate(milestoneYears.length, (idx) {
+                                            final y = milestoneYears[idx];
+                                            final fv = calculateFutureWealth(baseProjectionCapital, effectiveProjectionRate, y, monthlySipAddition);
+                                            return BarChartGroupData(
+                                              x: idx,
+                                              barRods: [
+                                                BarChartRodData(
+                                                  toY: fv,
+                                                  color: Colors.teal,
+                                                  width: 22,
+                                                  borderRadius: BorderRadius.circular(4),
+                                                ),
+                                              ],
+                                            );
+                                          }),
+                                          titlesData: FlTitlesData(
+                                            leftTitles: AxisTitles(
+                                              sideTitles: SideTitles(
+                                                showTitles: true,
+                                                reservedSize: 52,
+                                                getTitlesWidget: (val, _) => Text(
+                                                  _formatCompactRupees(val),
+                                                  style: const TextStyle(fontSize: 9.5),
+                                                ),
+                                              ),
+                                            ),
+                                            bottomTitles: AxisTitles(
+                                              sideTitles: SideTitles(
+                                                showTitles: true,
+                                                getTitlesWidget: (val, _) {
+                                                  final i = val.toInt();
+                                                  if (i < 0 || i >= milestoneYears.length) return const SizedBox();
+                                                  return Padding(
+                                                    padding: const EdgeInsets.only(top: 4),
+                                                    child: Text('${milestoneYears[i]} વર્ષ', style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold)),
+                                                  );
+                                                },
+                                              ),
+                                            ),
+                                            topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                                            rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                                          ),
+                                          gridData: const FlGridData(show: true, drawVerticalLine: false),
+                                          borderData: FlBorderData(show: false),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+
+                            // 1 વર્ષ, 5 વર્ષ, 10 વર્ષ, 20 વર્ષ, 30 વર્ષ ના વિગતવાર કાર્ડ્સ
+                            ...milestoneYears.map((yrs) {
+                              final double projectedTotal = calculateFutureWealth(
+                                baseProjectionCapital,
+                                effectiveProjectionRate,
+                                yrs,
+                                monthlySipAddition,
+                              );
+                              final double totalInvestedInPeriod = baseProjectionCapital + (monthlySipAddition * 12 * yrs);
+                              final double netGain = projectedTotal - totalInvestedInPeriod;
+                              final bool isExp = expandedProjectionYears.contains(yrs);
+
+                              return Card(
+                                margin: const EdgeInsets.symmetric(vertical: 5),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(12),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              CircleAvatar(
+                                                radius: 16,
+                                                backgroundColor: Colors.teal.withOpacity(0.15),
+                                                child: Text('$yrs', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.teal, fontSize: 13)),
+                                              ),
+                                              const SizedBox(width: 10),
+                                              Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  Text('$yrs વર્ષ પછી કુલ અંદાજિત કિંમત', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+                                                  Text(
+                                                    'કુલ નફો/વૃદ્ધિ: +₹${netGain.toStringAsFixed(0)} (${_formatCompactRupees(netGain)})',
+                                                    style: const TextStyle(fontSize: 11.5, color: Colors.green, fontWeight: FontWeight.w600),
+                                                  ),
+                                                ],
+                                              ),
+                                            ],
+                                          ),
+                                          Column(
+                                            crossAxisAlignment: CrossAxisAlignment.end,
+                                            children: [
+                                              Text(
+                                                '₹${projectedTotal.toStringAsFixed(0)}',
+                                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.teal),
+                                              ),
+                                              Text(
+                                                '(${_formatCompactRupees(projectedTotal)})',
+                                                style: TextStyle(fontSize: 11, color: secondaryTextColor),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 6),
+                                      InkWell(
+                                        onTap: () => setPageState(() {
+                                          if (isExp) {
+                                            expandedProjectionYears.remove(yrs);
+                                          } else {
+                                            expandedProjectionYears.add(yrs);
+                                          }
+                                        }),
+                                        child: Row(
+                                          mainAxisAlignment: MainAxisAlignment.center,
+                                          children: [
+                                            Icon(isExp ? Icons.remove_circle_outline : Icons.add_circle_outline, size: 16, color: Colors.teal),
+                                            const SizedBox(width: 4),
+                                            Text(
+                                              isExp ? 'સ્ટ્રેટેજી મુજબ કેટેગરી વિભાજન છુપાવો' : '+ સ્ટ્રેટેજી મુજબ કેટેગરી વિભાજન જુઓ',
+                                              style: const TextStyle(fontSize: 11.5, color: Colors.teal, fontWeight: FontWeight.bold),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      if (isExp) ...[
+                                        const Divider(),
+                                        ...strategyForProjection.entries.map((e) {
+                                          final double shareVal = projectedTotal * (e.value / 100.0);
+                                          return Padding(
+                                            padding: const EdgeInsets.symmetric(vertical: 2),
+                                            child: Row(
+                                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                              children: [
+                                                Expanded(child: Text('• ${e.key} (${e.value.toStringAsFixed(0)}%)', style: const TextStyle(fontSize: 12))),
+                                                Text('₹${shareVal.toStringAsFixed(0)}', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                                              ],
+                                            ),
+                                          );
+                                        }),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                              );
+                            }),
+                          ],
+                        ),
+                      ),
                     ],
                   ),
-                ),
-              );
-            },
+                );
+              },
+            ),
           );
         },
       ),
     );
   }
 
-  Widget _buildAssetBreakdownCard({
+  String _formatCompactRupees(double val) {
+    if (val >= 10000000) {
+      return '₹${(val / 10000000).toStringAsFixed(2)} Cr';
+    } else if (val >= 100000) {
+      return '₹${(val / 100000).toStringAsFixed(2)} L';
+    } else if (val >= 1000) {
+      return '₹${(val / 1000).toStringAsFixed(1)} K';
+    }
+    return '₹${val.toStringAsFixed(0)}';
+  }
+
+  // દરેક મુખ્ય કેટેગરી નીચે + નિશાની વાળું કાર્ડ (ક્લિક કરવાથી પેટા કેટેગરીઓ દેખાય)
+  Widget _buildExpandableCategoryCard({
+    required int catIndex,
+    required bool isExpanded,
+    required VoidCallback onToggle,
     required String title,
     required IconData icon,
     required Color color,
@@ -2675,6 +4203,8 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     required double pctOfTotalWealth,
     required double pctOfInvestments,
     required List<Map<String, dynamic>> subItems,
+    String? subtitleOverride,
+    Widget? extraBottomWidget,
   }) {
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 6),
@@ -2689,24 +4219,58 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                 Expanded(
                   child: Row(
                     children: [
-                      Icon(icon, color: color, size: 20),
+                      Icon(icon, color: color, size: 22),
                       const SizedBox(width: 8),
                       Expanded(child: Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5))),
                     ],
                   ),
                 ),
-                Text('₹${totalAmount.toStringAsFixed(0)} (${pctOfTotalWealth.toStringAsFixed(1)}%)', style: TextStyle(fontWeight: FontWeight.bold, color: color, fontSize: 13.5)),
+                Text(
+                  '₹${totalAmount.toStringAsFixed(0)} (${pctOfTotalWealth.toStringAsFixed(1)}%)',
+                  style: TextStyle(fontWeight: FontWeight.bold, color: color, fontSize: 13.5),
+                ),
               ],
             ),
-            const SizedBox(height: 3),
-            Text('કુલ રોકાણોમાં હિસ્સો: ${pctOfInvestments.toStringAsFixed(1)}%', style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
-            const Divider(),
-            ...subItems.map((s) {
-              final double amt = (s['amt'] as num?)?.toDouble() ?? 0.0;
-              final double pct = (s['pct'] as num?)?.toDouble() ?? 0.0;
-              final double shareInGroup = totalAmount > 0 ? (amt / totalAmount) * 100.0 : 0.0;
-              return _subCategoryPctRow('• ${s['label']}', amt, pct, shareInGroup, color);
-            }),
+            const SizedBox(height: 4),
+            Text(
+              subtitleOverride ?? 'કુલ રોકાણોમાં હિસ્સો: ${pctOfInvestments.toStringAsFixed(1)}%',
+              style: TextStyle(fontSize: 11.5, color: secondaryTextColor),
+            ),
+            const SizedBox(height: 6),
+            InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: onToggle,
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 10),
+                decoration: BoxDecoration(
+                  color: color.withOpacity(isDark ? 0.22 : 0.08),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: color.withOpacity(0.35)),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(isExpanded ? Icons.remove_circle : Icons.add_circle, color: color, size: 18),
+                    const SizedBox(width: 6),
+                    Text(
+                      isExpanded ? 'પેટા કેટેગરીઓ છુપાવો (-)' : '+ પેટા કેટેગરીઓ જુઓ (${subItems.length})',
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: isDark ? Colors.white : color),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (isExpanded) ...[
+              const Divider(height: 16),
+              ...subItems.map((s) {
+                final double amt = (s['amt'] as num?)?.toDouble() ?? 0.0;
+                final double pct = (s['pct'] as num?)?.toDouble() ?? 0.0;
+                final double shareInGroup = totalAmount > 0 ? (amt / totalAmount) * 100.0 : 0.0;
+                return _subCategoryPctRow('• ${s['label']}', amt, pct, shareInGroup, color);
+              }),
+              if (extraBottomWidget != null) extraBottomWidget,
+            ],
           ],
         ),
       ),
@@ -2732,36 +4296,9 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             child: LinearProgressIndicator(
               value: (pctOfGrand / 100.0).clamp(0.0, 1.0),
               minHeight: 5,
-              backgroundColor: Colors.grey.shade200,
+              backgroundColor: Colors.grey.withOpacity(0.25),
               color: color,
             ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildRiskQuestionDropdown({
-    required String question,
-    required int currentVal,
-    required List<String> options,
-    required ValueChanged<int> onChanged,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(question, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12.5)),
-          const SizedBox(height: 4),
-          DropdownButtonFormField<int>(
-            initialValue: currentVal.clamp(0, options.length - 1),
-            isExpanded: true,
-            decoration: const InputDecoration(isDense: true, border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8)),
-            items: List.generate(options.length, (i) => DropdownMenuItem(value: i, child: Text(options[i], style: const TextStyle(fontSize: 12)))),
-            onChanged: (v) {
-              if (v != null) onChanged(v);
-            },
           ),
         ],
       ),
@@ -2780,7 +4317,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Expanded(child: Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600))),
-            Text('${value.toStringAsFixed(0)}%', style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.indigo)),
+            Text('${value.toStringAsFixed(0)}%', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: isDark ? Colors.indigo.shade200 : Colors.indigo)),
           ],
         ),
         Slider(
@@ -2792,24 +4329,6 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           onChanged: onChanged,
         ),
       ],
-    );
-  }
-
-  Widget _taxSummaryBox(String title, String value, Color color) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withOpacity(0.4)),
-      ),
-      child: Column(
-        children: [
-          Text(title, style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: color)),
-          const SizedBox(height: 6),
-          Text(value, style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: color)),
-        ],
-      ),
     );
   }
 
@@ -2835,7 +4354,17 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   }
 
 
-  // --- દૈનિક નોંધ ડાયલોગ ---
+  // =========================================================
+  // દૈનિક નોંધ ડાયલોગ (તારીખ પસંદગી 01/01/1800 થી 31/12/2100 + ક્રેડિટ કાર્ડ લિમિટ વોર્નિંગ)
+  // =========================================================
+  DateTime _clampDate1800To2100(DateTime d) {
+    final minD = DateTime(1800, 1, 1);
+    final maxD = DateTime(2100, 12, 31);
+    if (d.isBefore(minD)) return minD;
+    if (d.isAfter(maxD)) return maxD;
+    return d;
+  }
+
   void _openTransactionDialog({Map<dynamic, dynamic>? existingTx}) {
     final titleController = TextEditingController(text: existingTx != null ? existingTx['title'] : '');
     final amountController = TextEditingController(text: existingTx != null ? existingTx['amount'].toString() : '');
@@ -2870,7 +4399,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                 DropdownButtonFormField<String>(
                   initialValue: selectedAcc['id'].toString(),
                   isExpanded: true,
-                  decoration: const InputDecoration(labelText: 'ખાતું પસંદ કરો (ક્રેડિટ કાર્ડ પસંદ કરતા બિલમાં ઉમેરાશે)'),
+                  decoration: const InputDecoration(labelText: 'ખાતું પસંદ કરો (ક્રેડિટ કાર્ડ પર લિમિટ વોર્નિંગ મળશે)'),
                   items: accounts.map((acc) => DropdownMenuItem<String>(value: acc['id'].toString(), child: Text(acc['name']))).toList(),
                   onChanged: (val) => setModalState(() => selectedAcc = accounts.firstWhere((a) => a['id'].toString() == val)),
                 ),
@@ -2892,9 +4421,10 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                         onPressed: () async {
                           final d = await showDatePicker(
                             context: context,
-                            initialDate: pickedDate,
-                            firstDate: DateTime(2000),
-                            lastDate: DateTime(2100),
+                            initialDate: _clampDate1800To2100(pickedDate),
+                            firstDate: DateTime(1800, 1, 1),
+                            lastDate: DateTime(2100, 12, 31),
+                            helpText: 'તારીખ પસંદ કરો (01/01/1800 - 31/12/2100)',
                           );
                           if (d != null) setModalState(() => pickedDate = d);
                         },
@@ -2936,6 +4466,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                         pickedTime != null ? pickedTime!.minute : 0,
                       );
 
+                      final String accIdStr = selectedAcc['id'].toString();
                       transactionsBox.put(id, {
                         'id': id,
                         'title': titleController.text,
@@ -2946,12 +4477,14 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                         'categoryName': selectedCat['name'],
                         'categoryEffect': selectedCat['effect'],
                         'categoryColor': selectedCat['color'],
-                        'accountId': selectedAcc['id'],
+                        'accountId': accIdStr,
                         'accountName': selectedAcc['name'],
                       });
                       _processAutoPayAndSIP();
                       setState(() {});
                       Navigator.pop(ctx);
+                      // જો ક્રેડિટ કાર્ડમાં લિમિટ કરતાં વધુ ખર્ચ થતો હોય તો વોર્નિંગ મેસેજ બતાવો
+                      _checkAndShowCreditCardLimitWarning(accIdStr);
                     },
                   ),
                 ),
@@ -2963,6 +4496,11 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     );
   }
 
+  // =========================================================
+  // પ્રથમ સ્ક્રીન પર રહેલ આલેખ:
+  // રૈખિક આલેખમાં કુલ ૩ અલગ રેખાઓ (૧. આવક, ૨. ખર્ચ, ૩. રોકાણ/ખર્ચ)
+  // આડી અક્ષ પર તારીખ, ઉભી અક્ષ પર રૂપિયા અંકમાં, જે તારીખે નોંધ થાય તે તારીખ પર કિંમત ઉમેરાઈને રેખા આગળ વધે
+  // =========================================================
   Widget _buildNotebookStyleChart() {
     double inc = _calculateTotal('incomeCredit');
     double exp = _calculateTotal('expenseDebit') + _calculateTotal('loanRepay');
@@ -2978,29 +4516,33 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           barGroups: [
             BarChartGroupData(x: 0, barRods: [BarChartRodData(toY: inc, color: Colors.green, width: 22, borderRadius: BorderRadius.circular(4))]),
             BarChartGroupData(
- x: 1,
-  barRods: [
-    BarChartRodData(
-      toY: exp,
-      color: Colors.redAccent,
-      width: 22,
-      borderRadius: BorderRadius.circular(4),
-    ),
-  ],
-),
+              x: 1,
+              barRods: [
+                BarChartRodData(
+                  toY: exp,
+                  color: Colors.redAccent,
+                  width: 22,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ],
+            ),
             BarChartGroupData(x: 2, barRods: [BarChartRodData(toY: inv, color: Colors.blue, width: 22, borderRadius: BorderRadius.circular(4))]),
           ],
           titlesData: FlTitlesData(
-            leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 42)),
+            leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 46)),
             bottomTitles: AxisTitles(
               sideTitles: SideTitles(
                 showTitles: true,
                 getTitlesWidget: (val, _) {
                   switch (val.toInt()) {
-                    case 0: return const Text("આવક", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11));
-                    case 1: return const Text("ખર્ચ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11));
-                    case 2: return const Text("રોકાણ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11));
-                    default: return const SizedBox();
+                    case 0:
+                      return const Text("આવક", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11));
+                    case 1:
+                      return const Text("ખર્ચ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11));
+                    case 2:
+                      return const Text("રોકાણ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11));
+                    default:
+                      return const SizedBox();
                   }
                 },
               ),
@@ -3009,40 +4551,187 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
           ),
           gridData: const FlGridData(show: true, drawVerticalLine: false),
-          borderData: FlBorderData(show: true, border: const Border(left: BorderSide(color: Colors.teal, width: 1.5), bottom: BorderSide(color: Colors.teal, width: 1.5))),
+          borderData: FlBorderData(
+            show: true,
+            border: const Border(
+              left: BorderSide(color: Colors.teal, width: 1.5),
+              bottom: BorderSide(color: Colors.teal, width: 1.5),
+            ),
+          ),
         ),
       );
     } else {
-      final allTx = filteredTransactions;
-      List<FlSpot> incomeSpots = [];
-      List<FlSpot> expenseSpots = [];
-      double cumInc = 0;
-      double cumExp = 0;
-      for (int i = 0; i < allTx.length; i++) {
-        final tx = allTx[allTx.length - 1 - i];
-        final amt = (tx['amount'] as num).toDouble();
-        if (tx['categoryEffect'] == 'incomeCredit') cumInc += amt;
-        if (tx['categoryEffect'] == 'expenseDebit' || tx['categoryEffect'] == 'loanRepay') cumExp += amt;
-        incomeSpots.add(FlSpot(i.toDouble(), cumInc));
-        expenseSpots.add(FlSpot(i.toDouble(), cumExp));
+      // રૈખિક આલેખ (Line Chart): તારીખ પ્રમાણે ક્રમમાં ગોઠવીને ૩ અલગ રેખાઓ
+      final ascTx = List<DataMap>.from(filteredTransactions);
+      ascTx.sort((a, b) => DateTime.parse(a['date']).compareTo(DateTime.parse(b['date'])));
+
+      // તારીખ પ્રમાણે ગ્રુપિંગ જેથી જે તારીખે નોંધ થાય તે જ તારીખ આડી અક્ષ પર આવે અને દરેક નોંધની કિંમત ઉમેરાઈને રેખા આગળ વધે
+      final List<String> dateLabels = [];
+      final List<FlSpot> incomeSpots = [];
+      final List<FlSpot> expenseSpots = [];
+      final List<FlSpot> investSpots = [];
+
+      double cumInc = 0.0;
+      double cumExp = 0.0;
+      double cumInv = 0.0;
+
+      final Map<String, List<DataMap>> groupedByDate = {};
+      for (final tx in ascTx) {
+        final dt = DateTime.parse(tx['date']);
+        final key = DateFormat('dd/MM/yy').format(dt);
+        groupedByDate.putIfAbsent(key, () => []).add(tx);
       }
-      if (incomeSpots.isEmpty) {
-        incomeSpots = [const FlSpot(0, 0), FlSpot(1, inc)];
-        expenseSpots = [const FlSpot(0, 0), FlSpot(1, exp)];
+
+      if (groupedByDate.isEmpty) {
+        dateLabels.add(DateFormat('dd/MM').format(DateTime.now()));
+        incomeSpots.add(const FlSpot(0, 0));
+        expenseSpots.add(const FlSpot(0, 0));
+        investSpots.add(const FlSpot(0, 0));
+      } else {
+        int xIdx = 0;
+        groupedByDate.forEach((dateStr, txOnDate) {
+          for (final tx in txOnDate) {
+            final double amt = (tx['amount'] as num).toDouble();
+            final String effect = (tx['categoryEffect'] ?? '').toString();
+            if (effect == 'incomeCredit') {
+              cumInc += amt;
+            } else if (effect == 'expenseDebit' || effect == 'loanRepay') {
+              cumExp += amt;
+            } else if (effect == 'assetIncrease') {
+              cumInv += amt;
+            }
+          }
+          dateLabels.add(dateStr);
+          incomeSpots.add(FlSpot(xIdx.toDouble(), cumInc));
+          expenseSpots.add(FlSpot(xIdx.toDouble(), cumExp));
+          investSpots.add(FlSpot(xIdx.toDouble(), cumInv));
+          xIdx++;
+        });
       }
-      chartWidget = LineChart(
-        LineChartData(
-          lineBarsData: [
-            LineChartBarData(spots: incomeSpots, isCurved: true, color: Colors.green, barWidth: 3),
-            LineChartBarData(spots: expenseSpots, isCurved: true, color: Colors.redAccent, barWidth: 3),
-          ],
-          titlesData: const FlTitlesData(
-            leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 42)),
-            bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-            topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-            rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+
+      // જો માત્ર ૧ જ તારીખ હોય તો શરૂઆતનો (0,0) બિંદુ ઉમેરો જેથી રેખા સ્પષ્ટ દેખાય
+      List<FlSpot> plotInc = incomeSpots;
+      List<FlSpot> plotExp = expenseSpots;
+      List<FlSpot> plotInv = investSpots;
+      List<String> plotLabels = dateLabels;
+
+      if (plotLabels.length == 1 && ascTx.isNotEmpty) {
+        plotLabels = ['શરૂઆત', plotLabels.first];
+        plotInc = [const FlSpot(0, 0), FlSpot(1, incomeSpots.first.y)];
+        plotExp = [const FlSpot(0, 0), FlSpot(1, expenseSpots.first.y)];
+        plotInv = [const FlSpot(0, 0), FlSpot(1, investSpots.first.y)];
+      }
+
+      final double maxLineY = [cumInc, cumExp, cumInv, 100.0].reduce(math.max) * 1.2;
+
+      chartWidget = Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              _legendBadge(Colors.green, '૧. આવક (₹${cumInc.toStringAsFixed(0)})'),
+              const SizedBox(width: 12),
+              _legendBadge(Colors.redAccent, '૨. ખર્ચ (₹${cumExp.toStringAsFixed(0)})'),
+              const SizedBox(width: 12),
+              _legendBadge(Colors.blue, '૩. રોકાણ (₹${cumInv.toStringAsFixed(0)})'),
+            ],
           ),
-        ),
+          const SizedBox(height: 6),
+          Expanded(
+            child: LineChart(
+              LineChartData(
+                minY: 0,
+                maxY: maxLineY,
+                lineTouchData: LineTouchData(
+                  touchTooltipData: LineTouchTooltipData(
+                    getTooltipItems: (touchedSpots) {
+                      return touchedSpots.map((spot) {
+                        final idx = spot.x.toInt().clamp(0, plotLabels.length - 1);
+                        final dLabel = plotLabels[idx];
+                        String catLabel = 'રોકાણ';
+                        if (spot.barIndex == 0) catLabel = 'આવક';
+                        if (spot.barIndex == 1) catLabel = 'ખર્ચ';
+                        return LineTooltipItem(
+                          '$dLabel\n$catLabel: ₹${spot.y.toStringAsFixed(0)}',
+                          const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                        );
+                      }).toList();
+                    },
+                  ),
+                ),
+                lineBarsData: [
+                  LineChartBarData(
+                    spots: plotInc,
+                    isCurved: false,
+                    color: Colors.green,
+                    barWidth: 3,
+                    dotData: const FlDotData(show: true),
+                  ),
+                  LineChartBarData(
+                    spots: plotExp,
+                    isCurved: false,
+                    color: Colors.redAccent,
+                    barWidth: 3,
+                    dotData: const FlDotData(show: true),
+                  ),
+                  LineChartBarData(
+                    spots: plotInv,
+                    isCurved: false,
+                    color: Colors.blue,
+                    barWidth: 3,
+                    dotData: const FlDotData(show: true),
+                  ),
+                ],
+                titlesData: FlTitlesData(
+                  leftTitles: AxisTitles(
+                    axisNameWidget: const Text('રૂપિયા (₹)', style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.bold)),
+                    axisNameSize: 14,
+                    sideTitles: SideTitles(
+                      showTitles: true,
+                      reservedSize: 46,
+                      getTitlesWidget: (val, _) => Text(
+                        val >= 100000
+                            ? '${(val / 1000).toStringAsFixed(0)}K'
+                            : val.toStringAsFixed(0),
+                        style: const TextStyle(fontSize: 9.5),
+                      ),
+                    ),
+                  ),
+                  bottomTitles: AxisTitles(
+                    axisNameWidget: const Text('તારીખ (Date)', style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.bold)),
+                    axisNameSize: 14,
+                    sideTitles: SideTitles(
+                      showTitles: true,
+                      interval: 1,
+                      reservedSize: 24,
+                      getTitlesWidget: (val, _) {
+                        final i = val.toInt();
+                        if (i < 0 || i >= plotLabels.length) return const SizedBox();
+                        final step = (plotLabels.length / 5).ceil().clamp(1, 999);
+                        if (i % step != 0 && i != plotLabels.length - 1) return const SizedBox();
+                        final shortDate = plotLabels[i].length > 5 ? plotLabels[i].substring(0, 5) : plotLabels[i];
+                        return Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(shortDate, style: const TextStyle(fontSize: 9.5, fontWeight: FontWeight.bold)),
+                        );
+                      },
+                    ),
+                  ),
+                  topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                  rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                ),
+                gridData: const FlGridData(show: true, drawVerticalLine: true),
+                borderData: FlBorderData(
+                  show: true,
+                  border: const Border(
+                    left: BorderSide(color: Colors.teal, width: 1.5),
+                    bottom: BorderSide(color: Colors.teal, width: 1.5),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
       );
     }
 
@@ -3068,7 +4757,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
               ],
             ),
             const SizedBox(height: 10),
-            SizedBox(height: 155, child: chartWidget),
+            SizedBox(height: 175, child: chartWidget),
           ],
         ),
       ),
@@ -3076,7 +4765,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   }
 
   // =========================================================
-  // (૪) સંપૂર્ણ નાણાકીય વિશ્લેષણ ટેબ (ટેક્સ, STCG/LTCG, બચત, રિટર્ન અને ઇન્ફ્લેશન બીટ)
+  // (૪) સંપૂર્ણ નાણાકીય વિશ્લેષણ ટેબ (ડાર્ક મોડ સુધારા સાથે)
   // =========================================================
   Widget _buildAnalysisTab() {
     final double totalInc = _calculateTotal('incomeCredit');
@@ -3085,15 +4774,12 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     final double totalSavings = totalInc - totalExp;
     final double savingsRate = totalInc > 0 ? (totalSavings / totalInc) * 100.0 : 0.0;
 
-    // ચોથા અને પાંચમા ફોટા મુજબ આખા વર્ષની કરપાત્ર આવક અને ડિડક્શન (આખી એપમાંથી ઓટો-ફેચ)
     final taxData = _fetchComprehensiveTaxData(entireFY: true);
     final double fyGrossInc = taxData['grossIncome'] ?? 0.0;
     final double taxableNew = taxData['taxableNew'] ?? 0.0;
-    final double slabTaxNew = taxData['slabTaxNew'] ?? 0.0;
     final double totalTaxNew = taxData['totalTaxNew'] ?? 0.0;
 
     final double taxableOld = taxData['taxableOld'] ?? 0.0;
-    final double slabTaxOld = taxData['slabTaxOld'] ?? 0.0;
     final double totalTaxOld = taxData['totalTaxOld'] ?? 0.0;
     final double allowed80C = taxData['allowed80C'] ?? 0.0;
     final double allowed80D = taxData['allowed80D'] ?? 0.0;
@@ -3103,19 +4789,16 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
 
     final double stcg = taxData['stcg'] ?? 0.0;
     final double ltcg = taxData['ltcg'] ?? 0.0;
-    final double cgTax = taxData['cgTax'] ?? 0.0;
 
-    final String selectedRegime = settingsBox.get('selectedTaxRegime', defaultValue: 'new').toString(); // new, old, compare
-    final String ageGroup = settingsBox.get('taxAgeGroup', defaultValue: 'regular').toString(); // regular, senior, super_senior
+    final String selectedRegime = settingsBox.get('selectedTaxRegime', defaultValue: 'new').toString();
+    final String ageGroup = settingsBox.get('taxAgeGroup', defaultValue: 'regular').toString();
     final double activeTotalTax = selectedRegime == 'old' ? totalTaxOld : totalTaxNew;
-    final double activeTaxableRegular = selectedRegime == 'old' ? taxableOld : taxableNew;
 
     final portfolioMetrics = _calculatePortfolioReturnMetrics();
     final double annualReturnPercent = portfolioMetrics['returnPercent'] ?? 0.0;
     final bool beatsInflation = annualReturnPercent >= benchmarkInflationRate;
     final double realReturn = annualReturnPercent - benchmarkInflationRate;
 
-    // પસંદ કરેલ ડ્રોપડાઉન મેનુ મુજબ ડેટા તૈયાર કરો
     Map<String, double> breakdownMap = {};
     if (selectedAnalysisMetric == AnalysisMetric.combined) {
       breakdownMap = {
@@ -3142,7 +4825,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
         'મ્યુચ્યુઅલ ફંડ (MF/SIP)': (pData['mfTotalVal'] as num).toDouble(),
         'FD / બોન્ડ / PLI / PPF': (pData['fixedIncomeTotalVal'] as num).toDouble(),
         'સોનું અને ચાંદી': (pData['bullionTotalVal'] as num).toDouble(),
-        'સ્થાવર મિલકત': (pData['physicalAssetsVal'] as num).toDouble(),
+        'સ્થાવર સંપત્તિ (મકાન/ખેતર/દુકાનો)': (pData['physicalAssetsVal'] as num).toDouble(),
       };
     } else if (selectedAnalysisMetric == AnalysisMetric.taxableIncome) {
       breakdownMap = {
@@ -3233,7 +4916,6 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ડ્રોપડાઉન અને કસ્ટમ તારીખ પસંદગી કાર્ડ
           Card(
             child: Padding(
               padding: const EdgeInsets.all(12),
@@ -3272,9 +4954,14 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                         Expanded(
                           child: OutlinedButton.icon(
                             icon: const Icon(Icons.date_range, size: 16),
-                            label: Text('શરૂઆત: ${DateFormat('dd/MM/yy').format(customStartDate)}', style: const TextStyle(fontSize: 11.5)),
+                            label: Text('શરૂઆત: ${DateFormat('dd/MM/yyyy').format(customStartDate)}', style: const TextStyle(fontSize: 11.5)),
                             onPressed: () async {
-                              final d = await showDatePicker(context: context, initialDate: customStartDate, firstDate: DateTime(2000), lastDate: DateTime(2100));
+                              final d = await showDatePicker(
+                                context: context,
+                                initialDate: _clampDate1800To2100(customStartDate),
+                                firstDate: DateTime(1800, 1, 1),
+                                lastDate: DateTime(2100, 12, 31),
+                              );
                               if (d != null) setState(() => customStartDate = d);
                             },
                           ),
@@ -3283,9 +4970,14 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                         Expanded(
                           child: OutlinedButton.icon(
                             icon: const Icon(Icons.event_available, size: 16),
-                            label: Text('અંતિમ: ${DateFormat('dd/MM/yy').format(customEndDate)}', style: const TextStyle(fontSize: 11.5)),
+                            label: Text('અંતિમ: ${DateFormat('dd/MM/yyyy').format(customEndDate)}', style: const TextStyle(fontSize: 11.5)),
                             onPressed: () async {
-                              final d = await showDatePicker(context: context, initialDate: customEndDate, firstDate: DateTime(2000), lastDate: DateTime(2100));
+                              final d = await showDatePicker(
+                                context: context,
+                                initialDate: _clampDate1800To2100(customEndDate),
+                                firstDate: DateTime(1800, 1, 1),
+                                lastDate: DateTime(2100, 12, 31),
+                              );
                               if (d != null) setState(() => customEndDate = d);
                             },
                           ),
@@ -3298,9 +4990,8 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             ),
           ),
 
-          // બચત, વાર્ષિક રિટર્ન અને ઇન્ફ્લેશન બીટ કાર્ડ
           Card(
-            color: beatsInflation ? Colors.teal.shade50 : Colors.amber.shade50,
+            color: beatsInflation ? adaptiveTintBg(Colors.teal) : adaptiveTintBg(Colors.amber),
             child: Padding(
               padding: const EdgeInsets.all(12),
               child: Column(
@@ -3309,8 +5000,11 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Expanded(
-                        child: Text('💰 બચત અને વાર્ષિક રિટર્ન vs મોંઘવારી (Inflation)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5, color: Colors.black87)),
+                      Expanded(
+                        child: Text(
+                          '💰 બચત અને વાર્ષિક રિટર્ન vs મોંઘવારી (Inflation)',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5, color: primaryTextColor),
+                        ),
                       ),
                       InkWell(
                         onTap: () {
@@ -3346,9 +5040,9 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      _metricColumn('કુલ બચત (Savings)', '₹${totalSavings.toStringAsFixed(0)} (${savingsRate.toStringAsFixed(1)}%)', Colors.teal.shade900),
-                      _metricColumn('પોર્ટફોલિયો રિટર્ન', '${annualReturnPercent.toStringAsFixed(2)}%', annualReturnPercent >= 0 ? Colors.green.shade800 : Colors.red),
-                      _metricColumn('વાસ્તવિક રિટર્ન (Real)', '${realReturn >= 0 ? '+' : ''}${realReturn.toStringAsFixed(2)}%', beatsInflation ? Colors.green.shade900 : Colors.deepOrange),
+                      _metricColumn('કુલ બચત (Savings)', '₹${totalSavings.toStringAsFixed(0)} (${savingsRate.toStringAsFixed(1)}%)', adaptiveAccentText(Colors.teal)),
+                      _metricColumn('પોર્ટફોલિયો રિટર્ન', '${annualReturnPercent.toStringAsFixed(2)}%', annualReturnPercent >= 0 ? adaptiveAccentText(Colors.green) : Colors.redAccent),
+                      _metricColumn('વાસ્તવિક રિટર્ન (Real)', '${realReturn >= 0 ? '+' : ''}${realReturn.toStringAsFixed(2)}%', beatsInflation ? adaptiveAccentText(Colors.green) : Colors.deepOrangeAccent),
                     ],
                   ),
                   const SizedBox(height: 10),
@@ -3379,10 +5073,6 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             ),
           ),
 
-          // =========================================================
-          // ત્રીજા ફોટામાં જ દેખાતું કરપાત્ર આવક અને Capital Gains (STCG / LTCG) વિશ્લેષણ કાર્ડ
-          // (ચોથા ફોટા: New Tax Regime FY 2026-27 અને પાંચમા ફોટા: Old Tax Regime + 80C/80D/Age Group મુજબ)
-          // =========================================================
           Card(
             elevation: 2,
             child: Padding(
@@ -3406,14 +5096,13 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                     ],
                   ),
                   const SizedBox(height: 8),
-                  // New vs Old Regime પસંદગી અને ઉંમર જૂથ
                   Row(
                     children: [
                       Expanded(
                         child: DropdownButtonFormField<String>(
                           initialValue: selectedRegime,
                           isExpanded: true,
-                          decoration: const InputDecoration(labelText: 'ટેક્સ રિજીમ (ફોટો ૪ & ૫)', isDense: true, border: OutlineInputBorder()),
+                          decoration: const InputDecoration(labelText: 'ટેક્સ રિજીમ', isDense: true, border: OutlineInputBorder()),
                           items: const [
                             DropdownMenuItem(value: 'new', child: Text('New Tax Regime (FY 2026-27)', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold))),
                             DropdownMenuItem(value: 'old', child: Text('Old Tax Regime (80C/80D સાથે)', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold))),
@@ -3448,21 +5137,21 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                     ],
                   ),
                   const Divider(height: 18),
-                  _taxSummaryRow('કુલ વાર્ષિક નિયમિત આવક (Gross Income):', '₹${fyGrossInc.toStringAsFixed(0)}', Colors.green.shade800, isBold: true),
+                  _taxSummaryRow('કુલ વાર્ષિક નિયમિત આવક (Gross Income):', '₹${fyGrossInc.toStringAsFixed(0)}', adaptiveAccentText(Colors.green), isBold: true),
                   const SizedBox(height: 4),
                   if (selectedRegime == 'new') ...[
-                    _taxSummaryRow('બાદ: સ્ટાન્ડર્ડ ડિડક્શન (New Regime):', '- ₹75000', Colors.grey.shade700),
+                    _taxSummaryRow('બાદ: સ્ટાન્ડર્ડ ડિડક્શન (New Regime):', '- ₹75000', secondaryTextColor),
                     const SizedBox(height: 4),
-                    _taxSummaryRow('નિયમિત કરપાત્ર આવક (સ્ટાન્ડર્ડ ડિડક્શન બાદ):', '₹${taxableNew.toStringAsFixed(0)}', Colors.black87, isBold: true),
+                    _taxSummaryRow('નિયમિત કરપાત્ર આવક (સ્ટાન્ડર્ડ ડિડક્શન બાદ):', '₹${taxableNew.toStringAsFixed(0)}', primaryTextColor, isBold: true),
                     if (taxableNew > 0 && taxableNew <= 1200000)
                       const Padding(
                         padding: EdgeInsets.only(top: 2),
                         child: Text('✨ કલમ 87A રિબેટ લાગુ: ₹12,00,000 સુધીની કરપાત્ર આવક પર સ્લેબ ટેક્સ ₹0', style: TextStyle(fontSize: 11, color: Colors.green, fontWeight: FontWeight.bold)),
                       ),
                   ] else ...[
-                    _taxSummaryRow('બાદ: સ્ટાન્ડર્ડ ડિડક્શન (Old Regime):', '- ₹50000', Colors.grey.shade700),
-                    _taxSummaryRow('બાદ: કલમ 80C રોકાણ (PLI/PPF/ELSS/FD ઓટો-ફેચ):', '- ₹${allowed80C.toStringAsFixed(0)}', Colors.teal.shade700),
-                    _taxSummaryRow('બાદ: કલમ 80D (હેલ્થ વીમો) + 80TTA/TTB:', '- ₹${(allowed80D + allowed80TTA).toStringAsFixed(0)}', Colors.teal.shade700),
+                    _taxSummaryRow('બાદ: સ્ટાન્ડર્ડ ડિડક્શન (Old Regime):', '- ₹50000', secondaryTextColor),
+                    _taxSummaryRow('બાદ: કલમ 80C રોકાણ (PLI/PPF/ELSS/FD ઓટો-ફેચ):', '- ₹${allowed80C.toStringAsFixed(0)}', Colors.teal),
+                    _taxSummaryRow('બાદ: કલમ 80D (હેલ્થ વીમો) + 80TTA/TTB:', '- ₹${(allowed80D + allowed80TTA).toStringAsFixed(0)}', Colors.teal),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -3493,14 +5182,14 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                                 ),
                               );
                             },
-                            child: const Text('બાદ: HRA / LTA / 80E / અન્ય ડિડક્શન ✎:', style: TextStyle(fontSize: 12, color: Colors.indigo, decoration: TextDecoration.underline)),
+                            child: Text('બાદ: HRA / LTA / 80E / અન્ય ડિડક્શન ✎:', style: TextStyle(fontSize: 12, color: isDark ? Colors.indigo.shade200 : Colors.indigo, decoration: TextDecoration.underline)),
                           ),
                         ),
-                        Text('- ₹${extraDed.toStringAsFixed(0)}', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.indigo)),
+                        Text('- ₹${extraDed.toStringAsFixed(0)}', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: isDark ? Colors.indigo.shade200 : Colors.indigo)),
                       ],
                     ),
                     const SizedBox(height: 4),
-                    _taxSummaryRow('નિયમિત કરપાત્ર આવક (કુલ ₹${totalOldDed.toStringAsFixed(0)} બાદ):', '₹${taxableOld.toStringAsFixed(0)}', Colors.black87, isBold: true),
+                    _taxSummaryRow('નિયમિત કરપાત્ર આવક (કુલ ₹${totalOldDed.toStringAsFixed(0)} બાદ):', '₹${taxableOld.toStringAsFixed(0)}', primaryTextColor, isBold: true),
                     if (taxableOld > 0 && taxableOld <= 500000)
                       const Padding(
                         padding: EdgeInsets.only(top: 2),
@@ -3508,22 +5197,21 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                       ),
                   ],
                   const SizedBox(height: 4),
-                  _taxSummaryRow('Short-Term Capital Gains (STCG @ 20%):', '₹${stcg.toStringAsFixed(0)}', Colors.indigo),
+                  _taxSummaryRow('Short-Term Capital Gains (STCG @ 20%):', '₹${stcg.toStringAsFixed(0)}', isDark ? Colors.indigo.shade200 : Colors.indigo),
                   const SizedBox(height: 4),
-                  _taxSummaryRow('Long-Term Capital Gains (LTCG @ 12.5% > ₹1.25L):', '₹${ltcg.toStringAsFixed(0)}', Colors.teal.shade800),
+                  _taxSummaryRow('Long-Term Capital Gains (LTCG @ 12.5% > ₹1.25L):', '₹${ltcg.toStringAsFixed(0)}', Colors.teal),
                   const Divider(),
                   _taxSummaryRow(
                     'કુલ અંદાજિત ટેક્સ જવાબદારી (4% સેસ સહિત):',
                     '₹${activeTotalTax.toStringAsFixed(0)}',
-                    Colors.red.shade800,
+                    Colors.redAccent,
                     isBold: true,
                   ),
                   const SizedBox(height: 8),
-                  // New vs Old Regime સરખામણી બોક્સ
                   Container(
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
-                      color: Colors.blueGrey.withOpacity(0.08),
+                      color: Colors.blueGrey.withOpacity(isDark ? 0.22 : 0.08),
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Column(
@@ -3533,7 +5221,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
                             Text('New Regime ટેક્સ: ₹${totalTaxNew.toStringAsFixed(0)}', style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Colors.teal)),
-                            Text('Old Regime ટેક્સ: ₹${totalTaxOld.toStringAsFixed(0)}', style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Colors.deepPurple)),
+                            Text('Old Regime ટેક્સ: ₹${totalTaxOld.toStringAsFixed(0)}', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: isDark ? Colors.purple.shade200 : Colors.deepPurple)),
                           ],
                         ),
                         const SizedBox(height: 3),
@@ -3541,7 +5229,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                           totalTaxNew <= totalTaxOld
                               ? '💡 ભલામણ: તમારા માટે New Tax Regime માં ₹${(totalTaxOld - totalTaxNew).toStringAsFixed(0)} ટેક્સ બચે છે.'
                               : '💡 ભલામણ: તમારા માટે Old Tax Regime માં ₹${(totalTaxNew - totalTaxOld).toStringAsFixed(0)} ટેક્સ બચે છે.',
-                          style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Colors.black87),
+                          style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: primaryTextColor),
                         ),
                       ],
                     ),
@@ -3551,7 +5239,6 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             ),
           ),
 
-          // ચાર્ટ કાર્ડ
           Card(
             child: Padding(
               padding: const EdgeInsets.all(12),
@@ -3598,7 +5285,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: const TextStyle(fontSize: 11, color: Colors.black54, fontWeight: FontWeight.w600)),
+        Text(label, style: TextStyle(fontSize: 11, color: secondaryTextColor, fontWeight: FontWeight.w600)),
         const SizedBox(height: 2),
         Text(val, style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold, color: color)),
       ],
@@ -3649,11 +5336,11 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(cat['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
-                        Text('₹${actual.toStringAsFixed(0)} / ₹${target.toStringAsFixed(0)}', style: TextStyle(color: isOver ? Colors.red : Colors.teal, fontWeight: FontWeight.bold)),
+                        Text('₹${actual.toStringAsFixed(0)} / ₹${target.toStringAsFixed(0)}', style: TextStyle(color: isOver ? Colors.redAccent : Colors.teal, fontWeight: FontWeight.bold)),
                       ],
                     ),
                     const SizedBox(height: 6),
-                    LinearProgressIndicator(value: percent, color: isOver ? Colors.red : Colors.teal, minHeight: 8),
+                    LinearProgressIndicator(value: percent, color: isOver ? Colors.redAccent : Colors.teal, minHeight: 8),
                   ],
                 ),
               ),
@@ -3664,6 +5351,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     );
   }
 
+
   // =========================================================
   // (૫) ઇન્વેસ્ટમેન્ટ પેજ (૫ પેટા-ટેબ્સ: MF/SIP, સ્ટોક/ETF, બોન્ડ/FD/PLI, કિંમતી ધાતુઓ, અન્ય મિલકત)
   // =========================================================
@@ -3673,6 +5361,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     return DefaultTabController(
       length: 5,
       child: Scaffold(
+        backgroundColor: Colors.transparent,
         appBar: AppBar(
           automaticallyImplyLeading: false,
           title: Text(invTitle, style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.bold)),
@@ -3700,7 +5389,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     );
   }
 
-  // --- (૫-A) મ્યુચ્યુઅલ ફંડ અને SIP રોકાણ નોંધ (ઓટો NAV ફેચ + ઓટો/મેન્યુઅલ વિકલ્પ) ---
+  // --- (૫-A) મ્યુચ્યુઅલ ફંડ અને SIP (તારીખ પ્રમાણે ઓટો NAV ફેચ + મેન્યુઅલ + Lumpsum/SIP + Edit + વેચાણ મર્યાદા) ---
   Widget _buildMutualFundPortfolioTab() {
     final mfList = mfInvestmentsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
     double totalInv = 0.0;
@@ -3719,15 +5408,15 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Card(
-            color: Colors.teal.shade50,
+            color: adaptiveTintBg(Colors.teal),
             child: Padding(
               padding: const EdgeInsets.all(12),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  _metricColumn('કુલ MF રોકાણ', '₹${totalInv.toStringAsFixed(0)}', Colors.teal.shade900),
-                  _metricColumn('હાલનું મૂલ્ય (NAV મુજબ)', '₹${currentVal.toStringAsFixed(0)}', Colors.blue.shade900),
-                  _metricColumn('નફો / નુકસાન', '₹${(currentVal - totalInv).toStringAsFixed(0)}', currentVal >= totalInv ? Colors.green.shade800 : Colors.red),
+                  _metricColumn('કુલ MF રોકાણ', '₹${totalInv.toStringAsFixed(0)}', adaptiveAccentText(Colors.teal)),
+                  _metricColumn('હાલનું મૂલ્ય (NAV મુજબ)', '₹${currentVal.toStringAsFixed(0)}', adaptiveAccentText(Colors.blue)),
+                  _metricColumn('નફો / નુકસાન', '₹${(currentVal - totalInv).toStringAsFixed(0)}', currentVal >= totalInv ? adaptiveAccentText(Colors.green) : Colors.redAccent),
                 ],
               ),
             ),
@@ -3736,12 +5425,12 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text('મારા મ્યુચ્યુઅલ ફંડ અને SIP:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
+              const Text('મારા મ્યુચ્યુઅલ ફંડ (Lumpsum & SIP):', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
               ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
                 icon: const Icon(Icons.add, size: 16),
                 label: const Text('MF / SIP ઉમેરો'),
-                onPressed: _openAddMutualFundDialog,
+                onPressed: () => _openAddMutualFundDialog(),
               ),
             ],
           ),
@@ -3764,22 +5453,30 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                 final double inv = (m['investedAmount'] as num?)?.toDouble() ?? 0.0;
                 final double val = units > 0 ? units * curNav : inv;
                 final bool isSip = m['investmentMode'] == 'SIP';
+                final DateTime dt = DateTime.tryParse(m['date'] ?? '') ?? DateTime.now();
 
                 return Card(
                   child: ListTile(
                     leading: CircleAvatar(
                       backgroundColor: Colors.teal.withOpacity(0.15),
-                      child: Text(isSip ? 'SIP' : 'MF', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.teal)),
+                      child: Text(isSip ? 'SIP' : 'Lump', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.teal)),
                     ),
-                    title: Text(m['schemeName'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+                    title: Text(m['schemeName'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                     subtitle: Text(
-                      'રોકાણ: ₹${inv.toStringAsFixed(0)} • યુનિટ્સ: ${units.toStringAsFixed(3)}\nખરીદ NAV: ₹$buyNav | હાલની NAV: ₹$curNav (${m['navMode'] == 'auto' ? 'ઓટો' : 'મેન્યુઅલ'})\nહાલનું મૂલ્ય: ₹${val.toStringAsFixed(0)}',
+                      'પ્રકાર: ${isSip ? 'માસિક SIP' : 'વન-ટાઇમ Lumpsum'} • તારીખ: ${DateFormat('dd/MM/yyyy').format(dt)}\n'
+                      'રોકાણ: ₹${inv.toStringAsFixed(0)} • યુનિટ્સ: ${units.toStringAsFixed(3)}\n'
+                      'ખરીદ NAV: ₹${buyNav.toStringAsFixed(2)} | હાલની NAV: ₹${curNav.toStringAsFixed(2)} | મૂલ્ય: ₹${val.toStringAsFixed(0)}',
                       style: const TextStyle(fontSize: 11.5),
                     ),
                     isThreeLine: true,
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        IconButton(
+                          icon: const Icon(Icons.edit, size: 18, color: Colors.teal),
+                          tooltip: 'સુધારો',
+                          onPressed: () => _openAddMutualFundDialog(existingItem: m),
+                        ),
                         ElevatedButton(
                           style: ElevatedButton.styleFrom(backgroundColor: Colors.orange, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 8)),
                           onPressed: () => _openRedeemMutualFundDialog(m),
@@ -3803,163 +5500,364 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     );
   }
 
-  void _openAddMutualFundDialog() {
-    final searchCtrl = TextEditingController();
-    final schemeCtrl = TextEditingController();
-    final navCtrl = TextEditingController();
-    final amtCtrl = TextEditingController();
-    final sipDayCtrl = TextEditingController(text: '5');
+  // ખરીદીની તારીખ પ્રમાણે ઐતિહાસિક NAV શોધતું ફંક્શન
+  double? _findHistoricalNavForDate(List<dynamic> navDataList, DateTime targetDate) {
+    if (navDataList.isEmpty) return null;
+    final targetOnly = DateTime(targetDate.year, targetDate.month, targetDate.day);
+    for (final entry in navDataList) {
+      final dStr = (entry['date'] ?? '').toString(); // format: dd-MM-yyyy
+      final parts = dStr.split('-');
+      if (parts.length == 3) {
+        final d = int.tryParse(parts[0]) ?? 1;
+        final m = int.tryParse(parts[1]) ?? 1;
+        final y = int.tryParse(parts[2]) ?? 2026;
+        final entryDate = DateTime(y, m, d);
+        // ખરીદીની તારીખ અથવા તેની તરત અગાઉના ચાલુ બજાર દિવસની NAV
+        if (!entryDate.isAfter(targetOnly)) {
+          return double.tryParse(entry['nav'].toString());
+        }
+      }
+    }
+    return double.tryParse(navDataList.first['nav'].toString());
+  }
 
-    String navMode = 'auto'; // auto OR manual
-    String investmentMode = 'SIP'; // SIP OR Lumpsum
-    String executionMode = 'auto'; // auto OR manual
-    String selectedAccId = accounts.isNotEmpty ? accounts.first['id'].toString() : '';
-    DateTime pickedDate = DateTime.now();
+  void _openAddMutualFundDialog({Map<dynamic, dynamic>? existingItem}) {
+    final searchCtrl = TextEditingController();
+    final schemeCtrl = TextEditingController(text: existingItem != null ? existingItem['schemeName'] : '');
+    final navCtrl = TextEditingController(text: existingItem != null ? existingItem['buyNav'].toString() : '');
+    final curNavCtrl = TextEditingController(text: existingItem != null ? (existingItem['currentNav'] ?? existingItem['buyNav']).toString() : '');
+    final amtCtrl = TextEditingController(text: existingItem != null ? existingItem['investedAmount'].toString() : '');
+    final sipDayCtrl = TextEditingController(text: existingItem != null ? (existingItem['sipDay']?.toString() ?? '5') : '5');
+
+    String navMode = existingItem != null ? (existingItem['navMode'] ?? 'auto') : 'auto';
+    String investmentMode = existingItem != null ? (existingItem['investmentMode'] ?? 'Lumpsum') : 'Lumpsum';
+    String executionMode = existingItem != null ? (existingItem['executionMode'] ?? 'auto') : 'auto';
+    String selectedAccId = existingItem != null && existingItem['accountId'] != null
+        ? existingItem['accountId'].toString()
+        : (accounts.isNotEmpty ? accounts.first['id'].toString() : '');
+    DateTime pickedDate = existingItem != null ? (DateTime.tryParse(existingItem['date'] ?? '') ?? DateTime.now()) : DateTime.now();
+
     bool isSearching = false;
     List<dynamic> searchResults = [];
+    List<dynamic> cachedNavHistory = [];
+    String navDateStatus = '';
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) {
+          Future<void> applyNavForPickedDate() async {
+            if (navMode != 'auto' || cachedNavHistory.isEmpty) return;
+            final foundNav = _findHistoricalNavForDate(cachedNavHistory, pickedDate);
+            final latestNav = double.tryParse(cachedNavHistory.first['nav'].toString());
+            if (foundNav != null && foundNav > 0) {
+              navCtrl.text = foundNav.toStringAsFixed(4);
+              curNavCtrl.text = (latestNav ?? foundNav).toStringAsFixed(4);
+              navDateStatus = '✅ ${DateFormat('dd/MM/yyyy').format(pickedDate)} ની NAV: ₹${foundNav.toStringAsFixed(4)} ઓટો ફેચ થઈ';
+            }
+          }
+
+          return AlertDialog(
+            title: Text(existingItem == null ? 'મ્યુચ્યુઅલ ફંડ (Lumpsum / SIP) ઉમેરો' : 'મ્યુચ્યુઅલ ફંડ સુધારો'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('રોકાણ પ્રકાર પસંદ કરો:', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 4),
+                  SegmentedButton<String>(
+                    segments: const [
+                      ButtonSegment(value: 'Lumpsum', icon: Icon(Icons.looks_one, size: 16), label: Text('લમસમ (Lumpsum)', style: TextStyle(fontSize: 11.5))),
+                      ButtonSegment(value: 'SIP', icon: Icon(Icons.autorenew, size: 16), label: Text('માસિક SIP', style: TextStyle(fontSize: 11.5))),
+                    ],
+                    selected: {investmentMode},
+                    onSelectionChanged: (s) => setDlgState(() => investmentMode = s.first),
+                  ),
+                  const SizedBox(height: 10),
+                  SegmentedButton<String>(
+                    segments: const [
+                      ButtonSegment(value: 'auto', label: Text('તારીખ મુજબ ઓટો NAV ફેચ', style: TextStyle(fontSize: 11))),
+                      ButtonSegment(value: 'manual', label: Text('મેન્યુઅલ NAV ઉમેરો', style: TextStyle(fontSize: 11))),
+                    ],
+                    selected: {navMode},
+                    onSelectionChanged: (s) => setDlgState(() => navMode = s.first),
+                  ),
+                  const SizedBox(height: 10),
+                  // ખરીદીની તારીખ પસંદગી (જે તારીખે લેવામાં આવે તે તારીખની NAV ઓટો ફેચ થાય)
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.calendar_today, size: 16, color: Colors.teal),
+                    label: Text('ખરીદી તારીખ: ${DateFormat('dd/MM/yyyy').format(pickedDate)}'),
+                    onPressed: () async {
+                      final d = await showDatePicker(
+                        context: context,
+                        initialDate: _clampDate1800To2100(pickedDate),
+                        firstDate: DateTime(1800, 1, 1),
+                        lastDate: DateTime(2100, 12, 31),
+                      );
+                      if (d != null) {
+                        pickedDate = d;
+                        await applyNavForPickedDate();
+                        setDlgState(() {});
+                      }
+                    },
+                  ),
+                  if (navDateStatus.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(navDateStatus, style: const TextStyle(fontSize: 11, color: Colors.teal, fontWeight: FontWeight.bold)),
+                    ),
+                  const SizedBox(height: 8),
+                  if (navMode == 'auto') ...[
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: searchCtrl,
+                            decoration: const InputDecoration(
+                              labelText: 'સ્કીમ સર્ચ કરો (દા.ત. HDFC, Nippon, Parag Parikh)',
+                              isDense: true,
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        ElevatedButton(
+                          onPressed: () async {
+                            if (searchCtrl.text.trim().isEmpty) return;
+                            setDlgState(() => isSearching = true);
+                            try {
+                              final res = await http
+                                  .get(Uri.parse("https://api.mfapi.in/mf/search?q=${Uri.encodeComponent(searchCtrl.text.trim())}"))
+                                  .timeout(const Duration(seconds: 7));
+                              if (res.statusCode == 200) {
+                                searchResults = (json.decode(res.body) as List).take(8).toList();
+                              }
+                            } catch (_) {}
+                            setDlgState(() => isSearching = false);
+                          },
+                          child: const Text('શોધો'),
+                        ),
+                      ],
+                    ),
+                    if (isSearching) const LinearProgressIndicator(),
+                    if (searchResults.isNotEmpty)
+                      Container(
+                        height: 130,
+                        margin: const EdgeInsets.only(top: 6),
+                        decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade400), borderRadius: BorderRadius.circular(8)),
+                        child: ListView.builder(
+                          itemCount: searchResults.length,
+                          itemBuilder: (c, idx) {
+                            final item = searchResults[idx];
+                            return ListTile(
+                              dense: true,
+                              title: Text(item['schemeName'].toString(), style: const TextStyle(fontSize: 11.5)),
+                              onTap: () async {
+                                schemeCtrl.text = item['schemeName'].toString();
+                                final code = item['schemeCode'];
+                                setDlgState(() {
+                                  searchResults = [];
+                                  isSearching = true;
+                                });
+                                try {
+                                  final dRes = await http
+                                      .get(Uri.parse("https://api.mfapi.in/mf/$code"))
+                                      .timeout(const Duration(seconds: 8));
+                                  if (dRes.statusCode == 200) {
+                                    final dData = json.decode(dRes.body);
+                                    final list = dData['data'] as List?;
+                                    if (list != null && list.isNotEmpty) {
+                                      cachedNavHistory = list;
+                                      await applyNavForPickedDate();
+                                    }
+                                  }
+                                } catch (_) {}
+                                setDlgState(() => isSearching = false);
+                              },
+                            );
+                          },
+                        ),
+                      ),
+                  ],
+                  const SizedBox(height: 8),
+                  TextField(controller: schemeCtrl, decoration: const InputDecoration(labelText: 'મ્યુચ્યુઅલ ફંડ સ્કીમનું નામ')),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: navCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(labelText: 'ખરીદી તારીખની NAV (₹)'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextField(
+                          controller: curNavCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(labelText: 'હાલની NAV (₹)'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  TextField(
+                    controller: amtCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(labelText: 'રોકાણ રકમ (₹)'),
+                  ),
+                  if (investmentMode == 'SIP') ...[
+                    TextField(
+                      controller: sipDayCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: 'દર મહિનાની SIP તારીખ (1-28)'),
+                    ),
+                    DropdownButtonFormField<String>(
+                      initialValue: executionMode,
+                      decoration: const InputDecoration(labelText: 'SIP કપાત મોડ (ઓટો / મેન્યુઅલ)'),
+                      items: const [
+                        DropdownMenuItem(value: 'auto', child: Text('ઓટોમેટિક ખાતામાંથી કપાત')),
+                        DropdownMenuItem(value: 'manual', child: Text('મેન્યુઅલ (રીમાઇન્ડર પૂછીને)')),
+                      ],
+                      onChanged: (v) => setDlgState(() => executionMode = v!),
+                    ),
+                  ],
+                  DropdownButtonFormField<String>(
+                    initialValue: selectedAccId,
+                    decoration: const InputDecoration(labelText: 'કપાત થનાર બેંક ખાતું'),
+                    items: accounts.map((a) => DropdownMenuItem(value: a['id'].toString(), child: Text(a['name']))).toList(),
+                    onChanged: (v) => setDlgState(() => selectedAccId = v!),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ')),
+              ElevatedButton(
+                onPressed: () {
+                  final amt = double.tryParse(amtCtrl.text) ?? 0.0;
+                  final nav = double.tryParse(navCtrl.text) ?? 100.0;
+                  final curNav = double.tryParse(curNavCtrl.text) ?? nav;
+                  if (amt <= 0 || schemeCtrl.text.trim().isEmpty) return;
+
+                  final units = nav > 0 ? amt / nav : 0.0;
+                  final id = existingItem != null ? existingItem['id'].toString() : "mf_${DateTime.now().millisecondsSinceEpoch}";
+
+                  mfInvestmentsBox.put(id, {
+                    'id': id,
+                    'schemeName': schemeCtrl.text.trim(),
+                    'buyNav': nav,
+                    'currentNav': curNav,
+                    'investedAmount': amt,
+                    'units': units,
+                    'navMode': navMode,
+                    'investmentMode': investmentMode,
+                    'executionMode': executionMode,
+                    'sipDay': int.tryParse(sipDayCtrl.text) ?? 5,
+                    'accountId': selectedAccId,
+                    'date': pickedDate.toIso8601String(),
+                    'mfSubCategory': existingItem?['mfSubCategory'] ?? '',
+                  });
+
+                  if (existingItem == null) {
+                    final acc = accounts.firstWhere((a) => a['id'].toString() == selectedAccId, orElse: () => {'name': 'બેંક'});
+                    final txId = "tx_mf_${DateTime.now().millisecondsSinceEpoch}";
+                    transactionsBox.put(txId, {
+                      'id': txId,
+                      'title': "MF $investmentMode: ${schemeCtrl.text.trim()}",
+                      'amount': amt,
+                      'date': pickedDate.toIso8601String(),
+                      'categoryId': '3',
+                      'categoryName': 'શેરબજાર / મ્યુચ્યુઅલ ફંડ',
+                      'categoryEffect': 'assetIncrease',
+                      'categoryColor': Colors.blue.toARGB32(),
+                      'accountId': selectedAccId,
+                      'accountName': acc['name'],
+                    });
+
+                    if (investmentMode == 'SIP') {
+                      final autoId = "auto_mf_${DateTime.now().millisecondsSinceEpoch}";
+                      autoPayBox.put(autoId, {
+                        'id': autoId,
+                        'type': 'SIP',
+                        'toTarget': schemeCtrl.text.trim(),
+                        'amount': amt,
+                        'day': int.tryParse(sipDayCtrl.text) ?? 5,
+                        'fromAccountId': selectedAccId,
+                        'executionMode': executionMode,
+                        'isActive': true,
+                        'enableFlashMessage': true,
+                        'reminderHour': 9,
+                        'reminderMinute': 0,
+                        'ringtoneName': 'ડિફોલ્ટ અલાર્મ ટોન (Default Alarm)',
+                        'lastProcessed': "${pickedDate.year}-${pickedDate.month}",
+                      });
+                    }
+                  }
+
+                  setState(() {});
+                  Navigator.pop(ctx);
+                },
+                child: const Text('સેવ કરો'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  // મ્યુચ્યુઅલ ફંડ વેચાણ (જેટલું રોકાણ/યુનિટ્સ થયેલ છે તેનાથી વધારે ન વેચી શકાય)
+  void _openRedeemMutualFundDialog(Map<dynamic, dynamic> mf) {
+    final double maxUnits = (mf['units'] as num?)?.toDouble() ?? 0.0;
+    final double maxInvested = (mf['investedAmount'] as num?)?.toDouble() ?? 0.0;
+    final double curNav = (mf['currentNav'] as num?)?.toDouble() ?? (mf['buyNav'] as num?)?.toDouble() ?? 100.0;
+
+    final unitsCtrl = TextEditingController(text: maxUnits > 0 ? maxUnits.toStringAsFixed(3) : '1');
+    final sellValCtrl = TextEditingController(text: (maxUnits > 0 ? maxUnits * curNav : maxInvested).toStringAsFixed(0));
+    String depositAccId = accounts.isNotEmpty ? accounts.first['id'].toString() : '';
+    DateTime sellDate = DateTime.now();
+    String errorText = '';
 
     showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDlgState) => AlertDialog(
-          title: const Text('મ્યુચ્યુઅલ ફંડ / SIP રોકાણ ઉમેરો'),
+          title: Text('${mf['schemeName']} - રિડીમ / વેચાણ'),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                SegmentedButton<String>(
-                  segments: const [
-                    ButtonSegment(value: 'auto', label: Text('ઓટો NAV ફેચ', style: TextStyle(fontSize: 11.5))),
-                    ButtonSegment(value: 'manual', label: Text('મેન્યુઅલ NAV', style: TextStyle(fontSize: 11.5))),
-                  ],
-                  selected: {navMode},
-                  onSelectionChanged: (s) => setDlgState(() => navMode = s.first),
+                Text(
+                  'ઉપલબ્ધ યુનિટ્સ: ${maxUnits.toStringAsFixed(3)} | મૂળ રોકાણ: ₹${maxInvested.toStringAsFixed(0)}',
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.teal),
                 ),
-                const SizedBox(height: 10),
-                if (navMode == 'auto') ...[
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: searchCtrl,
-                          decoration: const InputDecoration(
-                            labelText: 'સ્કીમ સર્ચ કરો (દા.ત. HDFC, Parag Parikh)',
-                            isDense: true,
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      ElevatedButton(
-                        onPressed: () async {
-                          if (searchCtrl.text.trim().isEmpty) return;
-                          setDlgState(() => isSearching = true);
-                          try {
-                            final res = await http
-                                .get(Uri.parse("https://api.mfapi.in/mf/search?q=${Uri.encodeComponent(searchCtrl.text.trim())}"))
-                                .timeout(const Duration(seconds: 7));
-                            if (res.statusCode == 200) {
-                              searchResults = (json.decode(res.body) as List).take(6).toList();
-                            }
-                          } catch (_) {}
-                          setDlgState(() => isSearching = false);
-                        },
-                        child: const Text('શોધો'),
-                      ),
-                    ],
-                  ),
-                  if (isSearching) const LinearProgressIndicator(),
-                  if (searchResults.isNotEmpty)
-                    Container(
-                      height: 120,
-                      margin: const EdgeInsets.only(top: 6),
-                      decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(8)),
-                      child: ListView.builder(
-                        itemCount: searchResults.length,
-                        itemBuilder: (c, idx) {
-                          final item = searchResults[idx];
-                          return ListTile(
-                            dense: true,
-                            title: Text(item['schemeName'].toString(), style: const TextStyle(fontSize: 11.5)),
-                            onTap: () async {
-                              schemeCtrl.text = item['schemeName'].toString();
-                              final code = item['schemeCode'];
-                              setDlgState(() {
-                                searchResults = [];
-                                isSearching = true;
-                              });
-                              try {
-                                final dRes = await http
-                                    .get(Uri.parse("https://api.mfapi.in/mf/$code"))
-                                    .timeout(const Duration(seconds: 7));
-                                if (dRes.statusCode == 200) {
-                                  final dData = json.decode(dRes.body);
-                                  final list = dData['data'] as List?;
-                                  if (list != null && list.isNotEmpty) {
-                                    navCtrl.text = list[0]['nav'].toString();
-                                  }
-                                }
-                              } catch (_) {}
-                              setDlgState(() => isSearching = false);
-                            },
-                          );
-                        },
-                      ),
-                    ),
-                ],
                 const SizedBox(height: 8),
-                TextField(controller: schemeCtrl, decoration: const InputDecoration(labelText: 'મ્યુચ્યુઅલ ફંડ સ્કીમનું નામ')),
                 TextField(
-                  controller: navCtrl,
+                  controller: unitsCtrl,
                   keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(labelText: 'NAV (₹)'),
-                ),
-                TextField(
-                  controller: amtCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(labelText: 'રોકાણ રકમ (₹)'),
-                ),
-                const SizedBox(height: 8),
-                DropdownButtonFormField<String>(
-                  initialValue: investmentMode,
-                  decoration: const InputDecoration(labelText: 'રોકાણ પ્રકાર'),
-                  items: const [
-                    DropdownMenuItem(value: 'SIP', child: Text('માસિક SIP')),
-                    DropdownMenuItem(value: 'Lumpsum', child: Text('વન-ટાઇમ (Lumpsum)')),
-                  ],
-                  onChanged: (v) => setDlgState(() => investmentMode = v!),
-                ),
-                if (investmentMode == 'SIP') ...[
-                  TextField(
-                    controller: sipDayCtrl,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: 'દર મહિનાની SIP તારીખ (1-28)'),
+                  decoration: InputDecoration(
+                    labelText: 'વેચવાના યુનિટ્સ (મહત્તમ: ${maxUnits.toStringAsFixed(3)})',
+                    errorText: errorText.isEmpty ? null : errorText,
                   ),
-                  DropdownButtonFormField<String>(
-                    initialValue: executionMode,
-                    decoration: const InputDecoration(labelText: 'SIP કપાત મોડ (ઓટો / મેન્યુઅલ)'),
-                    items: const [
-                      DropdownMenuItem(value: 'auto', child: Text('ઓટોમેટિક ખાતામાંથી કપાત')),
-                      DropdownMenuItem(value: 'manual', child: Text('મેન્યુઅલ (રીમાઇન્ડર પૂછીને)')),
-                    ],
-                    onChanged: (v) => setDlgState(() => executionMode = v!),
-                  ),
-                ],
-                DropdownButtonFormField<String>(
-                  initialValue: selectedAccId,
-                  decoration: const InputDecoration(labelText: 'કપાત થનાર બેંક ખાતું'),
-                  items: accounts.map((a) => DropdownMenuItem(value: a['id'].toString(), child: Text(a['name']))).toList(),
-                  onChanged: (v) => setDlgState(() => selectedAccId = v!),
-                ),
-                const SizedBox(height: 8),
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.calendar_today, size: 16),
-                  label: Text('તારીખ: ${DateFormat('dd/MM/yyyy').format(pickedDate)}'),
-                  onPressed: () async {
-                    final d = await showDatePicker(context: context, initialDate: pickedDate, firstDate: DateTime(2000), lastDate: DateTime(2100));
-                    if (d != null) setDlgState(() => pickedDate = d);
+                  onChanged: (v) {
+                    final u = double.tryParse(v) ?? 0.0;
+                    if (u > 0 && curNav > 0) {
+                      sellValCtrl.text = (u * curNav).toStringAsFixed(0);
+                    }
                   },
+                ),
+                TextField(
+                  controller: sellValCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(labelText: 'મળેલ કુલ વેચાણ રકમ (₹)'),
+                ),
+                DropdownButtonFormField<String>(
+                  initialValue: depositAccId,
+                  decoration: const InputDecoration(labelText: 'જમા થનાર બેંક ખાતું'),
+                  items: accounts.map((a) => DropdownMenuItem(value: a['id'].toString(), child: Text(a['name']))).toList(),
+                  onChanged: (v) => setDlgState(() => depositAccId = v!),
                 ),
               ],
             ),
@@ -3968,96 +5866,25 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ')),
             ElevatedButton(
               onPressed: () {
-                final amt = double.tryParse(amtCtrl.text) ?? 0.0;
-                final nav = double.tryParse(navCtrl.text) ?? 100.0;
-                if (amt <= 0 || schemeCtrl.text.trim().isEmpty) return;
+                final sellUnits = double.tryParse(unitsCtrl.text) ?? 0.0;
+                final sellAmt = double.tryParse(sellValCtrl.text) ?? 0.0;
+                if (sellUnits <= 0 || sellAmt <= 0) return;
 
-                final units = nav > 0 ? amt / nav : 0.0;
-                final id = "mf_${DateTime.now().millisecondsSinceEpoch}";
-
-                mfInvestmentsBox.put(id, {
-                  'id': id,
-                  'schemeName': schemeCtrl.text.trim(),
-                  'buyNav': nav,
-                  'currentNav': nav,
-                  'investedAmount': amt,
-                  'units': units,
-                  'navMode': navMode,
-                  'investmentMode': investmentMode,
-                  'executionMode': executionMode,
-                  'accountId': selectedAccId,
-                  'date': pickedDate.toIso8601String(),
-                });
-
-                final acc = accounts.firstWhere((a) => a['id'].toString() == selectedAccId, orElse: () => {'name': 'બેંક'});
-                final txId = "tx_mf_${DateTime.now().millisecondsSinceEpoch}";
-                transactionsBox.put(txId, {
-                  'id': txId,
-                  'title': "MF ${investmentMode}: ${schemeCtrl.text.trim()}",
-                  'amount': amt,
-                  'date': pickedDate.toIso8601String(),
-                  'categoryId': '3',
-                  'categoryName': 'શેરબજાર / મ્યુચ્યુઅલ ફંડ',
-                  'categoryEffect': 'assetIncrease',
-                  'categoryColor': Colors.blue.toARGB32(),
-                  'accountId': selectedAccId,
-                  'accountName': acc['name'],
-                });
-
-                if (investmentMode == 'SIP') {
-                  final autoId = "auto_mf_${DateTime.now().millisecondsSinceEpoch}";
-                  autoPayBox.put(autoId, {
-                    'id': autoId,
-                    'type': 'SIP',
-                    'toTarget': schemeCtrl.text.trim(),
-                    'amount': amt,
-                    'day': int.tryParse(sipDayCtrl.text) ?? 5,
-                    'fromAccountId': selectedAccId,
-                    'executionMode': executionMode,
-                    'isActive': true,
-                    'lastProcessed': "${pickedDate.year}-${pickedDate.month}",
+                if (maxUnits > 0 && sellUnits > maxUnits + 0.001) {
+                  setDlgState(() {
+                    errorText = '❌ તમારા ઉપલબ્ધ ${maxUnits.toStringAsFixed(3)} યુનિટ્સ કરતાં વધારે વેચી શકાય નહીં!';
                   });
+                  return;
+                }
+                if (maxUnits <= 0 && sellAmt > maxInvested) {
+                  setDlgState(() {
+                    errorText = '❌ તમારા રોકાણ ₹${maxInvested.toStringAsFixed(0)} કરતાં વધારે વેચી શકાય નહીં!';
+                  });
+                  return;
                 }
 
-                setState(() {});
-                Navigator.pop(ctx);
-              },
-              child: const Text('સેવ કરો'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _openRedeemMutualFundDialog(Map<dynamic, dynamic> mf) {
-    final sellValCtrl = TextEditingController(text: mf['investedAmount'].toString());
-    String depositAccId = accounts.isNotEmpty ? accounts.first['id'].toString() : '';
-    DateTime sellDate = DateTime.now();
-
-    showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDlgState) => AlertDialog(
-          title: Text('${mf['schemeName']} - રિડીમ / વેચાણ'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(controller: sellValCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'મળેલ કુલ વેચાણ રકમ (₹)')),
-              DropdownButtonFormField<String>(
-                initialValue: depositAccId,
-                decoration: const InputDecoration(labelText: 'જમા થનાર બેંક ખાતું'),
-                items: accounts.map((a) => DropdownMenuItem(value: a['id'].toString(), child: Text(a['name']))).toList(),
-                onChanged: (v) => setDlgState(() => depositAccId = v!),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ')),
-            ElevatedButton(
-              onPressed: () {
-                final sellAmt = double.tryParse(sellValCtrl.text) ?? 0.0;
-                final buyAmt = (mf['investedAmount'] as num?)?.toDouble() ?? 0.0;
+                final double fractionSold = maxUnits > 0 ? (sellUnits / maxUnits).clamp(0.0, 1.0) : 1.0;
+                final double proportionalBuyCost = maxInvested * fractionSold;
                 final buyDate = DateTime.tryParse(mf['date'] ?? '') ?? DateTime.now().subtract(const Duration(days: 100));
 
                 _recordRealizedCapitalGain(
@@ -4065,7 +5892,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   title: mf['schemeName'] ?? '',
                   buyDate: buyDate,
                   sellDate: sellDate,
-                  buyValue: buyAmt,
+                  buyValue: proportionalBuyCost,
                   sellValue: sellAmt,
                 );
 
@@ -4084,7 +5911,14 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   'accountName': acc['name'],
                 });
 
-                mfInvestmentsBox.delete(mf['id']);
+                if (fractionSold >= 0.999) {
+                  mfInvestmentsBox.delete(mf['id']);
+                } else {
+                  mf['units'] = math.max(0.0, maxUnits - sellUnits);
+                  mf['investedAmount'] = math.max(0.0, maxInvested - proportionalBuyCost);
+                  mfInvestmentsBox.put(mf['id'], mf);
+                }
+
                 setState(() {});
                 Navigator.pop(ctx);
               },
@@ -4096,7 +5930,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     );
   }
 
-  // --- (૫-B) સ્ટોક અને ETF રોકાણ નોંધ (દિવસ અને સમય પ્રમાણે એન્ટ્રી) ---
+  // --- (૫-B) સ્ટોક અને ETF રોકાણ નોંધ (Lumpsum/SIP + Edit + વેચાણ મર્યાદા) ---
   Widget _buildStockAndEtfPortfolioTab() {
     final stockList = stockInvestmentsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
     double totalInv = 0.0;
@@ -4116,15 +5950,15 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Card(
-            color: Colors.blue.shade50,
+            color: adaptiveTintBg(Colors.blue),
             child: Padding(
               padding: const EdgeInsets.all(12),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  _metricColumn('કુલ સ્ટોક/ETF રોકાણ', '₹${totalInv.toStringAsFixed(0)}', Colors.blue.shade900),
-                  _metricColumn('હાલનું બજાર મૂલ્ય', '₹${currentVal.toStringAsFixed(0)}', Colors.teal.shade900),
-                  _metricColumn('કુલ નફો / નુકસાન', '₹${(currentVal - totalInv).toStringAsFixed(0)}', currentVal >= totalInv ? Colors.green.shade800 : Colors.red),
+                  _metricColumn('કુલ સ્ટોક/ETF રોકાણ', '₹${totalInv.toStringAsFixed(0)}', adaptiveAccentText(Colors.blue)),
+                  _metricColumn('હાલનું બજાર મૂલ્ય', '₹${currentVal.toStringAsFixed(0)}', adaptiveAccentText(Colors.teal)),
+                  _metricColumn('કુલ નફો / નુકસાન', '₹${(currentVal - totalInv).toStringAsFixed(0)}', currentVal >= totalInv ? adaptiveAccentText(Colors.green) : Colors.redAccent),
                 ],
               ),
             ),
@@ -4138,7 +5972,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
                 icon: const Icon(Icons.add, size: 16),
                 label: const Text('સ્ટોક / ETF ઉમેરો'),
-                onPressed: _openAddStockOrEtfDialog,
+                onPressed: () => _openAddStockOrEtfDialog(),
               ),
             ],
           ),
@@ -4159,6 +5993,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                 final qty = (s['quantity'] as num?)?.toDouble() ?? 0.0;
                 final buyP = (s['buyPrice'] as num?)?.toDouble() ?? 0.0;
                 final totalCost = qty * buyP;
+                final mode = (s['investmentMode'] ?? 'Lumpsum').toString();
 
                 return Card(
                   child: ListTile(
@@ -4166,7 +6001,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                       backgroundColor: Colors.indigo.withOpacity(0.15),
                       child: Text(s['instrumentType'] ?? 'STK', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.indigo)),
                     ),
-                    title: Text("${s['symbol']} (${s['instrumentType']})", style: const TextStyle(fontWeight: FontWeight.bold)),
+                    title: Text("${s['symbol']} (${s['instrumentType']} • $mode)", style: const TextStyle(fontWeight: FontWeight.bold)),
                     subtitle: Text(
                       "Qty: $qty × ₹$buyP = ₹${totalCost.toStringAsFixed(0)}\nતારીખ: ${DateFormat('dd/MM/yyyy hh:mm a').format(dt)}",
                       style: const TextStyle(fontSize: 11.5),
@@ -4174,6 +6009,11 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        IconButton(
+                          icon: const Icon(Icons.edit, size: 18, color: Colors.teal),
+                          tooltip: 'સુધારો',
+                          onPressed: () => _openAddStockOrEtfDialog(existingItem: s),
+                        ),
                         ElevatedButton(
                           style: ElevatedButton.styleFrom(backgroundColor: Colors.orange, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 8)),
                           onPressed: () => _openSellStockOrEtfDialog(s),
@@ -4197,24 +6037,36 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     );
   }
 
-  void _openAddStockOrEtfDialog() {
-    String instrumentType = 'Stock';
-    final symbolCtrl = TextEditingController();
-    final qtyCtrl = TextEditingController(text: '1');
-    final buyPriceCtrl = TextEditingController();
-    String selectedAccId = accounts.isNotEmpty ? accounts.first['id'].toString() : '';
-    DateTime pickedDate = DateTime.now();
-    TimeOfDay pickedTime = TimeOfDay.now();
+  void _openAddStockOrEtfDialog({Map<dynamic, dynamic>? existingItem}) {
+    String instrumentType = existingItem != null ? (existingItem['instrumentType'] ?? 'Stock') : 'Stock';
+    String investmentMode = existingItem != null ? (existingItem['investmentMode'] ?? 'Lumpsum') : 'Lumpsum';
+    final symbolCtrl = TextEditingController(text: existingItem != null ? existingItem['symbol'] : '');
+    final qtyCtrl = TextEditingController(text: existingItem != null ? existingItem['quantity'].toString() : '1');
+    final buyPriceCtrl = TextEditingController(text: existingItem != null ? existingItem['buyPrice'].toString() : '');
+    String selectedAccId = existingItem != null && existingItem['accountId'] != null
+        ? existingItem['accountId'].toString()
+        : (accounts.isNotEmpty ? accounts.first['id'].toString() : '');
+    DateTime pickedDate = existingItem != null ? (DateTime.tryParse(existingItem['date'] ?? '') ?? DateTime.now()) : DateTime.now();
+    TimeOfDay pickedTime = TimeOfDay.fromDateTime(pickedDate);
 
     showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDlgState) => AlertDialog(
-          title: const Text('સ્ટોક અથવા ETF રોકાણ નોંધો'),
+          title: Text(existingItem == null ? 'સ્ટોક અથવા ETF રોકાણ નોંધો' : 'સ્ટોક / ETF સુધારો'),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(value: 'Lumpsum', label: Text('લમસમ (Lumpsum)', style: TextStyle(fontSize: 11.5))),
+                    ButtonSegment(value: 'SIP', label: Text('માસિક Stock SIP', style: TextStyle(fontSize: 11.5))),
+                  ],
+                  selected: {investmentMode},
+                  onSelectionChanged: (s) => setDlgState(() => investmentMode = s.first),
+                ),
+                const SizedBox(height: 8),
                 DropdownButtonFormField<String>(
                   initialValue: instrumentType,
                   decoration: const InputDecoration(labelText: 'પ્રકાર (Stock / ETF)'),
@@ -4269,7 +6121,12 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                     Expanded(
                       child: OutlinedButton(
                         onPressed: () async {
-                          final d = await showDatePicker(context: context, initialDate: pickedDate, firstDate: DateTime(2000), lastDate: DateTime(2100));
+                          final d = await showDatePicker(
+                            context: context,
+                            initialDate: _clampDate1800To2100(pickedDate),
+                            firstDate: DateTime(1800, 1, 1),
+                            lastDate: DateTime(2100, 12, 31),
+                          );
                           if (d != null) setDlgState(() => pickedDate = d);
                         },
                         child: Text(DateFormat('dd/MM/yyyy').format(pickedDate)),
@@ -4300,11 +6157,12 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
 
                 final totalAmt = qty * price;
                 final dt = DateTime(pickedDate.year, pickedDate.month, pickedDate.day, pickedTime.hour, pickedTime.minute);
-                final id = "stk_${DateTime.now().millisecondsSinceEpoch}";
+                final id = existingItem != null ? existingItem['id'].toString() : "stk_${DateTime.now().millisecondsSinceEpoch}";
 
                 stockInvestmentsBox.put(id, {
                   'id': id,
                   'instrumentType': instrumentType,
+                  'investmentMode': investmentMode,
                   'symbol': symbolCtrl.text.trim().toUpperCase(),
                   'quantity': qty,
                   'buyPrice': price,
@@ -4314,21 +6172,23 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   'date': dt.toIso8601String(),
                 });
 
-                final acc = accounts.firstWhere((a) => a['id'].toString() == selectedAccId);
-                final txId = "tx_stk_${DateTime.now().millisecondsSinceEpoch}";
-                transactionsBox.put(txId, {
-                  'id': txId,
-                  'title': "$instrumentType ખરીદી: ${symbolCtrl.text.trim().toUpperCase()} ($qty Qty)",
-                  'amount': totalAmt,
-                  'date': dt.toIso8601String(),
-                  'hasTime': true,
-                  'categoryId': '3',
-                  'categoryName': 'શેરબજાર / મ્યુચ્યુઅલ ફંડ',
-                  'categoryEffect': 'assetIncrease',
-                  'categoryColor': Colors.blue.toARGB32(),
-                  'accountId': selectedAccId,
-                  'accountName': acc['name'],
-                });
+                if (existingItem == null) {
+                  final acc = accounts.firstWhere((a) => a['id'].toString() == selectedAccId);
+                  final txId = "tx_stk_${DateTime.now().millisecondsSinceEpoch}";
+                  transactionsBox.put(txId, {
+                    'id': txId,
+                    'title': "$instrumentType ($investmentMode): ${symbolCtrl.text.trim().toUpperCase()} ($qty Qty)",
+                    'amount': totalAmt,
+                    'date': dt.toIso8601String(),
+                    'hasTime': true,
+                    'categoryId': '3',
+                    'categoryName': 'શેરબજાર / મ્યુચ્યુઅલ ફંડ',
+                    'categoryEffect': 'assetIncrease',
+                    'categoryColor': Colors.blue.toARGB32(),
+                    'accountId': selectedAccId,
+                    'accountName': acc['name'],
+                  });
+                }
 
                 setState(() {});
                 Navigator.pop(ctx);
@@ -4341,11 +6201,14 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     );
   }
 
+  // સ્ટોક/ETF વેચાણ (જેટલી સંખ્યા હોય તેનાથી વધારે ન વેચી શકાય)
   void _openSellStockOrEtfDialog(Map<dynamic, dynamic> stk) {
-    final qty = (stk['quantity'] as num?)?.toDouble() ?? 1.0;
-    final buyP = (stk['buyPrice'] as num?)?.toDouble() ?? 0.0;
+    final double maxQty = (stk['quantity'] as num?)?.toDouble() ?? 1.0;
+    final double buyP = (stk['buyPrice'] as num?)?.toDouble() ?? 0.0;
+    final sellQtyCtrl = TextEditingController(text: maxQty.toString());
     final sellPriceCtrl = TextEditingController(text: buyP.toString());
     String depositAccId = accounts.isNotEmpty ? accounts.first['id'].toString() : '';
+    String errorMsg = '';
 
     showDialog(
       context: context,
@@ -4354,8 +6217,23 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           title: Text('${stk['symbol']} - વેચાણ નોંધ'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              TextField(controller: sellPriceCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'વેચાણ ભાવ પ્રતિ યુનિટ (₹)')),
+              Text('ઉપલબ્ધ શેર/યુનિટ્સ: $maxQty (ખરીદ ભાવ: ₹$buyP)', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.teal)),
+              const SizedBox(height: 8),
+              TextField(
+                controller: sellQtyCtrl,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(
+                  labelText: 'વેચવાની સંખ્યા (મહત્તમ: $maxQty)',
+                  errorText: errorMsg.isEmpty ? null : errorMsg,
+                ),
+              ),
+              TextField(
+                controller: sellPriceCtrl,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(labelText: 'વેચાણ ભાવ પ્રતિ યુનિટ (₹)'),
+              ),
               DropdownButtonFormField<String>(
                 initialValue: depositAccId,
                 decoration: const InputDecoration(labelText: 'જમા થનાર ખાતું'),
@@ -4368,9 +6246,19 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ')),
             ElevatedButton(
               onPressed: () {
+                final sellQty = double.tryParse(sellQtyCtrl.text) ?? 0.0;
                 final sellP = double.tryParse(sellPriceCtrl.text) ?? buyP;
-                final totalSell = qty * sellP;
-                final totalBuy = qty * buyP;
+                if (sellQty <= 0 || sellP <= 0) return;
+
+                if (sellQty > maxQty + 0.0001) {
+                  setDlgState(() {
+                    errorMsg = '❌ તમારી પાસે માત્ર $maxQty યુનિટ્સ છે, તેનાથી વધારે વેચી શકાય નહીં!';
+                  });
+                  return;
+                }
+
+                final totalSell = sellQty * sellP;
+                final totalBuy = sellQty * buyP;
                 final buyDate = DateTime.tryParse(stk['date'] ?? '') ?? DateTime.now().subtract(const Duration(days: 90));
 
                 _recordRealizedCapitalGain(
@@ -4386,7 +6274,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                 final txId = "tx_stk_sell_${DateTime.now().millisecondsSinceEpoch}";
                 transactionsBox.put(txId, {
                   'id': txId,
-                  'title': "${stk['instrumentType']} વેચાણ: ${stk['symbol']}",
+                  'title': "${stk['instrumentType']} વેચાણ: ${stk['symbol']} ($sellQty Qty)",
                   'amount': totalSell,
                   'date': DateTime.now().toIso8601String(),
                   'categoryId': '2',
@@ -4397,7 +6285,13 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   'accountName': acc['name'],
                 });
 
-                stockInvestmentsBox.delete(stk['id']);
+                if ((maxQty - sellQty).abs() <= 0.0001) {
+                  stockInvestmentsBox.delete(stk['id']);
+                } else {
+                  stk['quantity'] = maxQty - sellQty;
+                  stk['totalInvested'] = (maxQty - sellQty) * buyP;
+                  stockInvestmentsBox.put(stk['id'], stk);
+                }
                 setState(() {});
                 Navigator.pop(ctx);
               },
@@ -4409,7 +6303,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     );
   }
 
-  // --- (૫-C) બોન્ડ, FD, PLI અને અન્ય સ્કીમ ટેબ (તારીખ પ્રમાણે ખાતામાં આપોઆપ જમા/ઉધાર) ---
+  // --- (૫-C) બોન્ડ, FD, PLI ટેબ (બેંક/બોન્ડ આપનારનું નામ, વ્યાજ દર, મેચ્યુરિટી તારીખ, ઓટો મેચ્યુરિટી જમા, પ્રિ-મેચ્યોર અને પેનલ્ટી વિકલ્પ + Edit) ---
   Widget _buildBondsFdPliTab() {
     final list = fixedIncomeBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
     double totalPrincipal = list.fold(0.0, (sum, i) => sum + ((i['principalAmount'] as num?)?.toDouble() ?? 0.0));
@@ -4426,8 +6320,8 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
               ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
                 icon: const Icon(Icons.add, size: 16),
-                label: const Text('નવી એન્ટ્રી'),
-                onPressed: _openAddFixedIncomeDialog,
+                label: const Text('નવી FD/બોન્ડ'),
+                onPressed: () => _openAddFixedIncomeDialog(),
               ),
             ],
           ),
@@ -4444,44 +6338,89 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
               itemCount: list.length,
               itemBuilder: (ctx, i) {
                 final item = list[i];
+                final startDate = DateTime.tryParse(item['startDate'] ?? '') ?? DateTime.now();
                 final targetDate = DateTime.tryParse(item['scheduledDate'] ?? '') ?? DateTime.now();
                 final isCredit = item['flowType'] == 'inflow_maturity';
                 final acc = accounts.firstWhere((a) => a['id'].toString() == item['accountId'], orElse: () => {'name': 'ખાતું'});
+                final String issuer = (item['issuerBankName'] ?? '').toString();
+                final double intRate = (item['interestRate'] as num?)?.toDouble() ?? 0.0;
+                final bool isPremature = item['isPrematureClosed'] == true;
 
                 return Card(
-                  child: ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: isCredit ? Colors.green.withOpacity(0.15) : Colors.orange.withOpacity(0.15),
-                      child: Icon(isCredit ? Icons.call_received : Icons.call_made, color: isCredit ? Colors.green : Colors.orange, size: 18),
-                    ),
-                    title: Text("${item['schemeType']}: ${item['title']}", style: const TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text(
-                      "રોકાણ: ₹${item['principalAmount']} • નિર્ધારિત રકમ: ₹${item['scheduledAmount']}\n${isCredit ? 'જમા થશે' : 'ચૂકવવાના'}: ${DateFormat('dd/MM/yyyy').format(targetDate)} (${acc['name']})\nસ્થિતિ: ${item['isSettled'] == true ? '✅ ખાતામાં એડજસ્ટ થયેલ' : '⏳ બાકી (ઓટો એડજસ્ટ)'}",
-                      style: const TextStyle(fontSize: 11.5),
-                    ),
-                    isThreeLine: true,
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
+                  child: Padding(
+                    padding: const EdgeInsets.all(10.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        if (item['isSettled'] != true)
-                          ElevatedButton(
-                            style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 8)),
-                            onPressed: () {
-                              item['scheduledDate'] = DateTime.now().toIso8601String();
-                              item['autoAdjust'] = true;
-                              fixedIncomeBox.put(item['id'], item);
-                              _processFixedIncomeSchedules();
-                              setState(() {});
-                            },
-                            child: const Text('અત્યારે એડજસ્ટ', style: TextStyle(fontSize: 10)),
-                          ),
-                        IconButton(
-                          icon: const Icon(Icons.delete, size: 18, color: Colors.red),
-                          onPressed: () {
-                            fixedIncomeBox.delete(item['id']);
-                            setState(() {});
-                          },
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                "${item['schemeType']}: ${item['title']}${issuer.isNotEmpty ? ' ($issuer)' : ''}",
+                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5),
+                              ),
+                            ),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  icon: const Icon(Icons.edit, size: 18, color: Colors.teal),
+                                  tooltip: 'સુધારો',
+                                  onPressed: () => _openAddFixedIncomeDialog(existingItem: item),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete, size: 18, color: Colors.red),
+                                  onPressed: () {
+                                    fixedIncomeBox.delete(item['id']);
+                                    setState(() {});
+                                  },
+                                ),
+                              ],
+                            ),
+                          ],
                         ),
+                        Text(
+                          "મૂળ રકમ: ₹${(item['principalAmount'] as num).toStringAsFixed(0)} • વ્યાજ દર: ${intRate.toStringAsFixed(2)}% • પાકતી રકમ: ₹${(item['scheduledAmount'] as num).toStringAsFixed(0)}\n"
+                          "શરૂઆત: ${DateFormat('dd/MM/yyyy').format(startDate)} → મેચ્યુરિટી: ${DateFormat('dd/MM/yyyy').format(targetDate)} (${acc['name']})\n"
+                          "સ્થિતિ: ${item['isSettled'] == true ? (isPremature ? '⚠️ પ્રિ-મેચ્યોર ક્લોઝ (પેનલ્ટી: ₹${item['prematurePenalty'] ?? 0})' : '✅ મેચ્યુરિટી ખાતામાં જમા થયેલ') : '⏳ ચાલુ (મેચ્યુરિટી તારીખે ઓટો જમા થશે)'}",
+                          style: const TextStyle(fontSize: 11.5),
+                        ),
+                        if (item['isSettled'] != true) ...[
+                          const SizedBox(height: 8),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: Colors.deepOrange,
+                                  side: const BorderSide(color: Colors.deepOrange),
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                ),
+                                icon: const Icon(Icons.warning_amber, size: 15),
+                                label: const Text('પ્રિ-મેચ્યોર (Premature)', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                                onPressed: () => _openPrematureCloseFixedIncomeDialog(item),
+                              ),
+                              const SizedBox(width: 8),
+                              ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.teal,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                ),
+                                icon: const Icon(Icons.check_circle_outline, size: 15),
+                                label: Text(isCredit ? 'મેચ્યુરિટી જમા કરો' : 'હપ્તો ચૂકવો', style: const TextStyle(fontSize: 11)),
+                                onPressed: () {
+                                  item['scheduledDate'] = DateTime.now().toIso8601String();
+                                  item['autoAdjust'] = true;
+                                  fixedIncomeBox.put(item['id'], item);
+                                  _processFixedIncomeSchedules();
+                                  setState(() {});
+                                },
+                              ),
+                            ],
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -4493,129 +6432,481 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     );
   }
 
-  void _openAddFixedIncomeDialog() {
-    String schemeType = 'FD (ફિક્સ ડિપોઝિટ)';
-    final titleCtrl = TextEditingController();
-    final principalCtrl = TextEditingController();
-    final scheduledAmtCtrl = TextEditingController();
-    String flowType = 'inflow_maturity'; // inflow_maturity OR outflow_installment
-    String selectedAccId = accounts.isNotEmpty ? accounts.first['id'].toString() : '';
-    DateTime startDate = DateTime.now();
-    DateTime scheduledDate = DateTime.now().add(const Duration(days: 365));
-    bool deductInitialNow = true;
+  double _calculateMaturityAmount(double principal, double ratePct, DateTime start, DateTime maturity, bool isCompound) {
+    if (principal <= 0 || ratePct <= 0) return principal;
+    final int days = math.max(1, maturity.difference(start).inDays);
+    final double years = days / 365.0;
+    if (isCompound) {
+      // ભારતીય બેંક FD પ્રમાણે ત્રિમાસિક ચક્રવૃદ્ધિ વ્યાજ (Quarterly Compounding)
+      return principal * math.pow(1.0 + (ratePct / 100.0) / 4.0, 4.0 * years);
+    } else {
+      return principal + (principal * (ratePct / 100.0) * years);
+    }
+  }
+
+  void _openAddFixedIncomeDialog({Map<dynamic, dynamic>? existingItem}) {
+    String schemeType = existingItem != null ? (existingItem['schemeType'] ?? 'FD (ફિક્સ ડિપોઝિટ)') : 'FD (ફિક્સ ડિપોઝિટ)';
+    String investmentMode = existingItem != null ? (existingItem['investmentMode'] ?? 'Lumpsum') : 'Lumpsum';
+    final issuerCtrl = TextEditingController(text: existingItem != null ? (existingItem['issuerBankName'] ?? '') : '');
+    final titleCtrl = TextEditingController(text: existingItem != null ? (existingItem['title'] ?? '') : '');
+    final principalCtrl = TextEditingController(text: existingItem != null ? existingItem['principalAmount'].toString() : '');
+    final rateCtrl = TextEditingController(text: existingItem != null ? (existingItem['interestRate']?.toString() ?? '7.25') : '7.25');
+    final scheduledAmtCtrl = TextEditingController(text: existingItem != null ? existingItem['scheduledAmount'].toString() : '');
+
+    String flowType = existingItem != null ? (existingItem['flowType'] ?? 'inflow_maturity') : 'inflow_maturity';
+    String selectedAccId = existingItem != null && existingItem['accountId'] != null
+        ? existingItem['accountId'].toString()
+        : (accounts.isNotEmpty ? accounts.first['id'].toString() : '');
+    DateTime startDate = existingItem != null ? (DateTime.tryParse(existingItem['startDate'] ?? '') ?? DateTime.now()) : DateTime.now();
+    DateTime scheduledDate = existingItem != null
+        ? (DateTime.tryParse(existingItem['scheduledDate'] ?? '') ?? DateTime.now().add(const Duration(days: 365)))
+        : DateTime.now().add(const Duration(days: 365));
+    bool isCompoundInterest = existingItem != null ? (existingItem['isCompound'] ?? true) : true;
+    bool deductInitialNow = existingItem == null;
 
     showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDlgState) => AlertDialog(
-          title: const Text('બોન્ડ / FD / PLI / સ્કીમ ઉમેરો'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                DropdownButtonFormField<String>(
-                  initialValue: schemeType,
-                  decoration: const InputDecoration(labelText: 'પ્રકાર પસંદ કરો'),
-                  items: ['FD (ફિક્સ ડિપોઝિટ)', 'બોન્ડ ( Sovereign / Corp Bond)', 'PLI (પોસ્ટલ લાઇફ ઇન્સ્યોરન્સ)', 'RD / પોસ્ટ ઓફિસ સ્કીમ', 'PPF / SSY / અન્ય']
-                      .map((e) => DropdownMenuItem(value: e, child: Text(e, style: const TextStyle(fontSize: 12.5)))).toList(),
-                  onChanged: (v) => setDlgState(() => schemeType = v!),
-                ),
-                TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: 'નામ / પોલિસી / FD વિગત')),
-                TextField(controller: principalCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'રોકાણ / મૂળ રકમ (₹)')),
-                const SizedBox(height: 8),
-                DropdownButtonFormField<String>(
-                  initialValue: flowType,
-                  decoration: const InputDecoration(labelText: 'નિર્ધારિત તારીખે વ્યવહારનો પ્રકાર'),
-                  items: const [
-                    DropdownMenuItem(value: 'inflow_maturity', child: Text('રૂપિયા ખાતામાં જમા થવાના છે (Maturity/Payout)', style: TextStyle(fontSize: 12))),
-                    DropdownMenuItem(value: 'outflow_installment', child: Text('રૂપિયા ખાતામાંથી ચૂકવવાના છે (Installment/Pay)', style: TextStyle(fontSize: 12))),
-                  ],
-                  onChanged: (v) => setDlgState(() => flowType = v!),
-                ),
-                TextField(controller: scheduledAmtCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'નિર્ધારિત તારીખે જમા/ચૂકવવાની રકમ (₹)')),
-                DropdownButtonFormField<String>(
-                  initialValue: selectedAccId,
-                  decoration: const InputDecoration(labelText: 'કયા બેંક ખાતામાં એડજસ્ટ કરવા?'),
-                  items: accounts.map((a) => DropdownMenuItem(value: a['id'].toString(), child: Text(a['name']))).toList(),
-                  onChanged: (v) => setDlgState(() => selectedAccId = v!),
-                ),
-                const SizedBox(height: 8),
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.event, size: 16),
-                  label: Text('નિર્ધારિત તારીખ: ${DateFormat('dd/MM/yyyy').format(scheduledDate)}'),
-                  onPressed: () async {
-                    final d = await showDatePicker(context: context, initialDate: scheduledDate, firstDate: DateTime(2000), lastDate: DateTime(2100));
-                    if (d != null) setDlgState(() => scheduledDate = d);
-                  },
-                ),
-                SwitchListTile(
-                  dense: true,
-                  title: const Text('શરૂઆતની મૂળ રકમ અત્યારે ખાતામાંથી બાદ કરવી છે?', style: TextStyle(fontSize: 12)),
-                  value: deductInitialNow,
-                  onChanged: (v) => setDlgState(() => deductInitialNow = v),
-                ),
-              ],
+        builder: (ctx, setDlgState) {
+          void recalculateMaturity() {
+            final p = double.tryParse(principalCtrl.text) ?? 0.0;
+            final r = double.tryParse(rateCtrl.text) ?? 0.0;
+            if (p > 0) {
+              final mat = _calculateMaturityAmount(p, r, startDate, scheduledDate, isCompoundInterest);
+              scheduledAmtCtrl.text = mat.toStringAsFixed(0);
+            }
+          }
+
+          return AlertDialog(
+            title: Text(existingItem == null ? 'બોન્ડ / FD / PLI / સ્કીમ ઉમેરો' : 'FD / બોન્ડ વિગત સુધારો'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SegmentedButton<String>(
+                    segments: const [
+                      ButtonSegment(value: 'Lumpsum', label: Text('વન-ટાઇમ (Lumpsum)', style: TextStyle(fontSize: 11.5))),
+                      ButtonSegment(value: 'SIP', label: Text('નિયમિત હપ્તો (RD/SIP)', style: TextStyle(fontSize: 11.5))),
+                    ],
+                    selected: {investmentMode},
+                    onSelectionChanged: (s) => setDlgState(() => investmentMode = s.first),
+                  ),
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<String>(
+                    initialValue: schemeType,
+                    decoration: const InputDecoration(labelText: 'પ્રકાર પસંદ કરો'),
+                    items: ['FD (ફિક્સ ડિપોઝિટ)', 'બોન્ડ (Sovereign / Corp Bond)', 'PLI (પોસ્ટલ લાઇફ ઇન્સ્યોરન્સ)', 'RD / પોસ્ટ ઓફિસ સ્કીમ', 'PPF / SSY / અન્ય']
+                        .map((e) => DropdownMenuItem(value: e, child: Text(e, style: const TextStyle(fontSize: 12.5)))).toList(),
+                    onChanged: (v) => setDlgState(() => schemeType = v!),
+                  ),
+                  TextField(
+                    controller: issuerCtrl,
+                    decoration: const InputDecoration(labelText: 'બેંક અથવા બોન્ડ આપનાર સંસ્થાનું નામ (દા.ત. SBI, HDFC, RBI)'),
+                  ),
+                  TextField(
+                    controller: titleCtrl,
+                    decoration: const InputDecoration(labelText: 'સ્કીમ નામ / FD નંબર / પોલિસી વિગત'),
+                  ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: principalCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(labelText: 'રોકાણ મૂળ રકમ (₹)'),
+                          onChanged: (_) => recalculateMaturity(),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextField(
+                          controller: rateCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(labelText: 'વાર્ષિક વ્યાજ દર (%)'),
+                          onChanged: (_) => recalculateMaturity(),
+                        ),
+                      ),
+                    ],
+                  ),
+                  SwitchListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('ત્રિમાસિક ચક્રવૃદ્ધિ વ્યાજ (Quarterly Compounding)', style: TextStyle(fontSize: 11.5)),
+                    value: isCompoundInterest,
+                    onChanged: (v) {
+                      setDlgState(() {
+                        isCompoundInterest = v;
+                        recalculateMaturity();
+                      });
+                    },
+                  ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          icon: const Icon(Icons.date_range, size: 15),
+                          label: Text('શરૂ: ${DateFormat('dd/MM/yy').format(startDate)}', style: const TextStyle(fontSize: 11)),
+                          onPressed: () async {
+                            final d = await showDatePicker(
+                              context: context,
+                              initialDate: _clampDate1800To2100(startDate),
+                              firstDate: DateTime(1800, 1, 1),
+                              lastDate: DateTime(2100, 12, 31),
+                            );
+                            if (d != null) {
+                              setDlgState(() {
+                                startDate = d;
+                                recalculateMaturity();
+                              });
+                            }
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          icon: const Icon(Icons.event_available, size: 15),
+                          label: Text('મેચ્યુરિટી: ${DateFormat('dd/MM/yy').format(scheduledDate)}', style: const TextStyle(fontSize: 11)),
+                          onPressed: () async {
+                            final d = await showDatePicker(
+                              context: context,
+                              initialDate: _clampDate1800To2100(scheduledDate),
+                              firstDate: DateTime(1800, 1, 1),
+                              lastDate: DateTime(2100, 12, 31),
+                            );
+                            if (d != null) {
+                              setDlgState(() {
+                                scheduledDate = d;
+                                recalculateMaturity();
+                              });
+                            }
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: scheduledAmtCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(labelText: 'મેચ્યુરિટી તારીખે જમા થનાર કુલ રકમ (₹)'),
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.calculate, color: Colors.teal),
+                        tooltip: 'વ્યાજ દર પ્રમાણે મેચ્યુરિટી ગણો',
+                        onPressed: () => setDlgState(recalculateMaturity),
+                      ),
+                    ],
+                  ),
+                  DropdownButtonFormField<String>(
+                    initialValue: flowType,
+                    decoration: const InputDecoration(labelText: 'મેચ્યુરિટી તારીખે વ્યવહારનો પ્રકાર'),
+                    items: const [
+                      DropdownMenuItem(value: 'inflow_maturity', child: Text('મેચ્યુરિટી રકમ ખાતામાં જમા થશે (Maturity Credit)', style: TextStyle(fontSize: 12))),
+                      DropdownMenuItem(value: 'outflow_installment', child: Text('રૂપિયા ખાતામાંથી ચૂકવવાના છે (Installment)', style: TextStyle(fontSize: 12))),
+                    ],
+                    onChanged: (v) => setDlgState(() => flowType = v!),
+                  ),
+                  DropdownButtonFormField<String>(
+                    initialValue: selectedAccId,
+                    decoration: const InputDecoration(labelText: 'કયા બેંક ખાતામાં મેચ્યુરિટી જમા/એડજસ્ટ કરવી?'),
+                    items: accounts.map((a) => DropdownMenuItem(value: a['id'].toString(), child: Text(a['name']))).toList(),
+                    onChanged: (v) => setDlgState(() => selectedAccId = v!),
+                  ),
+                  if (existingItem == null)
+                    SwitchListTile(
+                      dense: true,
+                      title: const Text('શરૂઆતની મૂળ રકમ અત્યારે ખાતામાંથી બાદ કરવી છે?', style: TextStyle(fontSize: 12)),
+                      value: deductInitialNow,
+                      onChanged: (v) => setDlgState(() => deductInitialNow = v),
+                    ),
+                ],
+              ),
             ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ')),
-            ElevatedButton(
-              onPressed: () {
-                final pAmt = double.tryParse(principalCtrl.text) ?? 0.0;
-                final sAmt = double.tryParse(scheduledAmtCtrl.text) ?? pAmt;
-                if (pAmt <= 0 || titleCtrl.text.trim().isEmpty) return;
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ')),
+              ElevatedButton(
+                onPressed: () {
+                  final pAmt = double.tryParse(principalCtrl.text) ?? 0.0;
+                  final rPct = double.tryParse(rateCtrl.text) ?? 0.0;
+                  if (scheduledAmtCtrl.text.trim().isEmpty && pAmt > 0) {
+                    recalculateMaturity();
+                  }
+                  final sAmt = double.tryParse(scheduledAmtCtrl.text) ?? pAmt;
+                  if (pAmt <= 0 || titleCtrl.text.trim().isEmpty) return;
 
-                final id = "fi_${DateTime.now().millisecondsSinceEpoch}";
-                fixedIncomeBox.put(id, {
-                  'id': id,
-                  'schemeType': schemeType,
-                  'title': titleCtrl.text.trim(),
-                  'principalAmount': pAmt,
-                  'scheduledAmount': sAmt,
-                  'flowType': flowType,
-                  'accountId': selectedAccId,
-                  'startDate': startDate.toIso8601String(),
-                  'scheduledDate': scheduledDate.toIso8601String(),
-                  'autoAdjust': true,
-                  'isSettled': false,
-                });
-
-                if (deductInitialNow) {
-                  final acc = accounts.firstWhere((a) => a['id'].toString() == selectedAccId);
-                  final txId = "tx_fi_${DateTime.now().millisecondsSinceEpoch}";
-                  transactionsBox.put(txId, {
-                    'id': txId,
-                    'title': "$schemeType રોકાણ: ${titleCtrl.text.trim()}",
-                    'amount': pAmt,
-                    'date': startDate.toIso8601String(),
-                    'categoryId': '7',
-                    'categoryName': 'મિલકત / બોન્ડ / FD રોકાણ',
-                    'categoryEffect': 'assetIncrease',
-                    'categoryColor': Colors.teal.toARGB32(),
+                  final id = existingItem != null ? existingItem['id'].toString() : "fi_${DateTime.now().millisecondsSinceEpoch}";
+                  fixedIncomeBox.put(id, {
+                    'id': id,
+                    'schemeType': schemeType,
+                    'investmentMode': investmentMode,
+                    'issuerBankName': issuerCtrl.text.trim(),
+                    'title': titleCtrl.text.trim(),
+                    'principalAmount': pAmt,
+                    'interestRate': rPct,
+                    'isCompound': isCompoundInterest,
+                    'scheduledAmount': sAmt,
+                    'flowType': flowType,
                     'accountId': selectedAccId,
-                    'accountName': acc['name'],
+                    'startDate': startDate.toIso8601String(),
+                    'scheduledDate': scheduledDate.toIso8601String(),
+                    'autoAdjust': true,
+                    'isSettled': existingItem != null ? (existingItem['isSettled'] ?? false) : false,
                   });
-                }
 
-                _processFixedIncomeSchedules();
-                setState(() {});
-                Navigator.pop(ctx);
-              },
-              child: const Text('સેવ કરો'),
-            ),
-          ],
-        ),
+                  if (existingItem == null && deductInitialNow) {
+                    final acc = accounts.firstWhere((a) => a['id'].toString() == selectedAccId);
+                    final txId = "tx_fi_${DateTime.now().millisecondsSinceEpoch}";
+                    transactionsBox.put(txId, {
+                      'id': txId,
+                      'title': "$schemeType રોકાણ: ${titleCtrl.text.trim()} (${issuerCtrl.text.trim()})",
+                      'amount': pAmt,
+                      'date': startDate.toIso8601String(),
+                      'categoryId': '7',
+                      'categoryName': 'મિલકત / બોન્ડ / FD રોકાણ',
+                      'categoryEffect': 'assetIncrease',
+                      'categoryColor': Colors.teal.toARGB32(),
+                      'accountId': selectedAccId,
+                      'accountName': acc['name'],
+                    });
+                  }
+
+                  _processFixedIncomeSchedules();
+                  setState(() {});
+                  Navigator.pop(ctx);
+                },
+                child: const Text('સેવ કરો'),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
 
-  // --- (૫-D) કિંમતી ધાતુઓ (Gold 24K, Gold 22K, Silver - વિસંગતતા સંપૂર્ણ દૂર) ---
+  // FD / બોન્ડ પ્રિ-મેચ્યોર (Premature Withdrawal) અને પેનલ્ટી ગણતરી ડાયલોગ
+  void _openPrematureCloseFixedIncomeDialog(Map<dynamic, dynamic> item) {
+    final double principal = (item['principalAmount'] as num?)?.toDouble() ?? 0.0;
+    final double origRate = (item['interestRate'] as num?)?.toDouble() ?? 7.0;
+    final DateTime startDate = DateTime.tryParse(item['startDate'] ?? '') ?? DateTime.now().subtract(const Duration(days: 180));
+    DateTime prematureDate = DateTime.now();
+
+    final penaltyRateCtrl = TextEditingController(text: '1.0'); // 1% penalty on interest rate
+    final penaltyFixedCtrl = TextEditingController(text: '0'); // Fixed rupee penalty
+    final netPayoutCtrl = TextEditingController();
+    String depositAccId = (item['accountId'] ?? (accounts.isNotEmpty ? accounts.first['id'] : '')).toString();
+
+    void recalcPremature() {
+      final double penRate = double.tryParse(penaltyRateCtrl.text) ?? 0.0;
+      final double penFixed = double.tryParse(penaltyFixedCtrl.text) ?? 0.0;
+      final double effectiveRate = math.max(0.0, origRate - penRate);
+      final double grossVal = _calculateMaturityAmount(principal, effectiveRate, startDate, prematureDate, item['isCompound'] ?? true);
+      final double netVal = math.max(0.0, grossVal - penFixed);
+      netPayoutCtrl.text = netVal.toStringAsFixed(0);
+    }
+
+    recalcPremature();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) {
+          final int heldDays = math.max(1, prematureDate.difference(startDate).inDays);
+          return AlertDialog(
+            title: Text('પ્રિ-મેચ્યોર ક્લોઝર: ${item['title']}', style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.bold)),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'મૂળ રોકાણ: ₹${principal.toStringAsFixed(0)} | મૂળ વ્યાજ દર: ${origRate.toStringAsFixed(2)}%\n'
+                    'રોકાણ સમયગાળો: $heldDays દિવસ (${DateFormat('dd/MM/yyyy').format(startDate)} થી)',
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.teal),
+                  ),
+                  const SizedBox(height: 10),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.event, size: 16),
+                    label: Text('પ્રિ-મેચ્યોર તારીખ: ${DateFormat('dd/MM/yyyy').format(prematureDate)}'),
+                    onPressed: () async {
+                      final d = await showDatePicker(
+                        context: context,
+                        initialDate: _clampDate1800To2100(prematureDate),
+                        firstDate: DateTime(1800, 1, 1),
+                        lastDate: DateTime(2100, 12, 31),
+                      );
+                      if (d != null) {
+                        setDlgState(() {
+                          prematureDate = d;
+                          recalcPremature();
+                        });
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: penaltyRateCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(labelText: 'પેનલ્ટી વ્યાજ કાપ (%)'),
+                          onChanged: (_) => setDlgState(recalcPremature),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextField(
+                          controller: penaltyFixedCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(labelText: 'સીધી પેનલ્ટી ચાર્જ (₹)'),
+                          onChanged: (_) => setDlgState(recalcPremature),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: netPayoutCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(
+                      labelText: 'પેનલ્ટી બાદ ખાતામાં જમા થનાર ચોખ્ખી રકમ (₹)',
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<String>(
+                    initialValue: depositAccId,
+                    decoration: const InputDecoration(labelText: 'જમા થનાર બેંક ખાતું'),
+                    items: accounts.map((a) => DropdownMenuItem(value: a['id'].toString(), child: Text(a['name']))).toList(),
+                    onChanged: (v) => setDlgState(() => depositAccId = v!),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ')),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.deepOrange, foregroundColor: Colors.white),
+                onPressed: () {
+                  final double netPayout = double.tryParse(netPayoutCtrl.text) ?? principal;
+                  final double penFixed = double.tryParse(penaltyFixedCtrl.text) ?? 0.0;
+                  final acc = accounts.firstWhere((a) => a['id'].toString() == depositAccId, orElse: () => {'name': 'બેંક ખાતું'});
+
+                  final txId = "fi_auto_premature_${DateTime.now().millisecondsSinceEpoch}";
+                  transactionsBox.put(txId, {
+                    'id': txId,
+                    'title': "${item['schemeType']} પ્રિ-મેચ્યોર જમા: ${item['title']}",
+                    'amount': netPayout,
+                    'date': prematureDate.toIso8601String(),
+                    'categoryId': '2',
+                    'categoryName': 'પગાર / ધંધાકીય આવક',
+                    'categoryEffect': 'incomeCredit',
+                    'categoryColor': Colors.green.toARGB32(),
+                    'accountId': depositAccId,
+                    'accountName': acc['name'],
+                  });
+
+                  _recordRealizedCapitalGain(
+                    assetType: item['schemeType'] ?? 'FD/Bond',
+                    title: "${item['title']} (Premature)",
+                    buyDate: startDate,
+                    sellDate: prematureDate,
+                    buyValue: principal,
+                    sellValue: netPayout,
+                  );
+
+                  item['isSettled'] = true;
+                  item['isPrematureClosed'] = true;
+                  item['prematurePenalty'] = penFixed;
+                  item['scheduledAmount'] = netPayout;
+                  fixedIncomeBox.put(item['id'], item);
+
+                  setState(() {});
+                  Navigator.pop(ctx);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('✅ પ્રિ-મેચ્યોર રકમ ₹${netPayout.toStringAsFixed(0)} ખાતામાં જમા થઈ ગઈ!'),
+                      backgroundColor: Colors.teal,
+                    ),
+                  );
+                },
+                child: const Text('પ્રિ-મેચ્યોર જમા કરો'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  // --- (૫-D) કિંમતી ધાતુઓ (આપેલ ધાતુઓ સિવાય નવી ધાતુ ઉમેરવાનો વિકલ્પ + Lumpsum/SIP + Edit + વેચાણ મર્યાદા) ---
+  void _openAddCustomMetalTypeDialog(VoidCallback onUpdated) {
+    final nameCtrl = TextEditingController();
+    final rateCtrl = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('નવી કિંમતી ધાતુ ઉમેરો'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameCtrl,
+              decoration: const InputDecoration(labelText: 'ધાતુનું નામ (દા.ત. પ્લેટિનમ, રોઝ ગોલ્ડ, તાંબુ, ડાયમંડ)'),
+            ),
+            TextField(
+              controller: rateCtrl,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(labelText: '૧ ગ્રામનો બજાર ભાવ (₹)'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ')),
+          ElevatedButton(
+            onPressed: () {
+              final n = nameCtrl.text.trim();
+              final r = double.tryParse(rateCtrl.text) ?? 0.0;
+              if (n.isEmpty || r <= 0) return;
+              final list = customMetals;
+              list.removeWhere((e) => e['name'] == n);
+              list.add({'name': n, 'ratePerGram': r});
+              settingsBox.put('customMetalsList', list);
+              onUpdated();
+              setState(() {});
+              Navigator.pop(ctx);
+            },
+            child: const Text('ઉમેરો'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _openAddBullionDialog({Map<dynamic, dynamic>? existingItem}) {
     final titleCtrl = TextEditingController(text: existingItem != null ? existingItem['title'] : '');
     final weightCtrl = TextEditingController(text: existingItem != null ? existingItem['weight'].toString() : '');
     final buyPriceCtrl = TextEditingController(text: existingItem != null ? existingItem['buyPrice'].toString() : '');
+
+    List<String> getAvailableMetalNames() {
+      final base = ['સોનું 24K (Gold 24K)', 'સોનું 22K (Gold 22K)', 'ચાંદી (Silver)'];
+      for (final cm in customMetals) {
+        final n = cm['name'].toString();
+        if (!base.contains(n)) base.add(n);
+      }
+      return base;
+    }
+
     String metalType = existingItem != null ? existingItem['metalType'] : 'સોનું 24K (Gold 24K)';
-    String selectedAccId = accounts.isNotEmpty ? accounts.first['id'].toString() : '';
+    String investmentMode = existingItem != null ? (existingItem['investmentMode'] ?? 'Lumpsum') : 'Lumpsum';
+    String selectedAccId = existingItem != null && existingItem['accountId'] != null
+        ? existingItem['accountId'].toString()
+        : (accounts.isNotEmpty ? accounts.first['id'].toString() : '');
 
     DateTime pickedDate = existingItem != null ? DateTime.parse(existingItem['date']) : DateTime.now();
     bool deductFromAccount = existingItem == null;
@@ -4624,13 +6915,11 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDlgState) {
-          final rates = bullionCityRates[selectedCity] ?? {"gold24": 96500.0, "gold22": 88400.0, "silver": 112000.0};
-          double currentPerGram = rates['gold24']! / 10.0;
-          if (metalType.contains('22K')) {
-            currentPerGram = rates['gold22']! / 10.0;
-          } else if (metalType.contains('Silver') || metalType.contains('ચાંદી')) {
-            currentPerGram = rates['silver']! / 1000.0;
+          final allMetalOptions = getAvailableMetalNames();
+          if (!allMetalOptions.contains(metalType)) {
+            allMetalOptions.add(metalType);
           }
+          final double currentPerGram = _getMetalLiveRatePerGram(metalType);
 
           void autoEstimatePrice() {
             final w = double.tryParse(weightCtrl.text) ?? 0.0;
@@ -4640,21 +6929,49 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           }
 
           return AlertDialog(
-            title: Text(existingItem == null ? 'સોનું / ચાંદી રોકાણ ઉમેરો' : 'સોનું / ચાંદી સુધારો'),
+            title: Text(existingItem == null ? 'કિંમતી ધાતુ રોકાણ ઉમેરો' : 'કિંમતી ધાતુ સુધારો'),
             content: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  DropdownButtonFormField<String>(
-                    initialValue: metalType,
-                    decoration: const InputDecoration(labelText: 'ધાતુ અને શુદ્ધતા પસંદ કરો'),
-                    items: ['સોનું 24K (Gold 24K)', 'સોનું 22K (Gold 22K)', 'ચાંદી (Silver)'].map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
-                    onChanged: (v) {
-                      setDlgState(() {
-                        metalType = v!;
-                        autoEstimatePrice();
-                      });
-                    },
+                  SegmentedButton<String>(
+                    segments: const [
+                      ButtonSegment(value: 'Lumpsum', label: Text('વન-ટાઇમ ખરીદી', style: TextStyle(fontSize: 11.5))),
+                      ButtonSegment(value: 'SIP', label: Text('ગોલ્ડ/સિલ્વર SIP', style: TextStyle(fontSize: 11.5))),
+                    ],
+                    selected: {investmentMode},
+                    onSelectionChanged: (s) => setDlgState(() => investmentMode = s.first),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          initialValue: metalType,
+                          isExpanded: true,
+                          decoration: const InputDecoration(labelText: 'ધાતુ અને શુદ્ધતા પસંદ કરો'),
+                          items: allMetalOptions.map((t) => DropdownMenuItem(value: t, child: Text(t, style: const TextStyle(fontSize: 12.5)))).toList(),
+                          onChanged: (v) {
+                            setDlgState(() {
+                              metalType = v!;
+                              autoEstimatePrice();
+                            });
+                          },
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.add_circle, color: Colors.teal),
+                        tooltip: 'અન્ય નવી ધાતુ ઉમેરો',
+                        onPressed: () {
+                          _openAddCustomMetalTypeDialog(() {
+                            setDlgState(() {
+                              final updated = getAvailableMetalNames();
+                              metalType = updated.last;
+                            });
+                          });
+                        },
+                      ),
+                    ],
                   ),
                   TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: 'વિગત (દા.ત. 10g લગડી / સિક્કો / દાગીના)')),
                   TextField(
@@ -4679,20 +6996,35 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                       ),
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  SwitchListTile(
-                    dense: true,
-                    title: const Text('ખાતામાંથી રકમ બાદ કરી કુલ ઇન્વેસ્ટમેન્ટમાં ઉમેરવી?', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                    value: deductFromAccount,
-                    onChanged: (v) => setDlgState(() => deductFromAccount = v),
+                  const SizedBox(height: 6),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.calendar_today, size: 15),
+                    label: Text('તારીખ: ${DateFormat('dd/MM/yyyy').format(pickedDate)}'),
+                    onPressed: () async {
+                      final d = await showDatePicker(
+                        context: context,
+                        initialDate: _clampDate1800To2100(pickedDate),
+                        firstDate: DateTime(1800, 1, 1),
+                        lastDate: DateTime(2100, 12, 31),
+                      );
+                      if (d != null) setDlgState(() => pickedDate = d);
+                    },
                   ),
-                  if (deductFromAccount)
-                    DropdownButtonFormField<String>(
-                      initialValue: selectedAccId,
-                      decoration: const InputDecoration(labelText: 'ચુકવણી કરેલ બેંક / રોકડ ખાતું'),
-                      items: accounts.map((a) => DropdownMenuItem(value: a['id'].toString(), child: Text(a['name']))).toList(),
-                      onChanged: (v) => setDlgState(() => selectedAccId = v!),
+                  if (existingItem == null) ...[
+                    SwitchListTile(
+                      dense: true,
+                      title: const Text('ખાતામાંથી રકમ બાદ કરી કુલ ઇન્વેસ્ટમેન્ટમાં ઉમેરવી?', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                      value: deductFromAccount,
+                      onChanged: (v) => setDlgState(() => deductFromAccount = v),
                     ),
+                    if (deductFromAccount)
+                      DropdownButtonFormField<String>(
+                        initialValue: selectedAccId,
+                        decoration: const InputDecoration(labelText: 'ચુકવણી કરેલ બેંક / રોકડ ખાતું'),
+                        items: accounts.map((a) => DropdownMenuItem(value: a['id'].toString(), child: Text(a['name']))).toList(),
+                        onChanged: (v) => setDlgState(() => selectedAccId = v!),
+                      ),
+                  ],
                 ],
               ),
             ),
@@ -4709,6 +7041,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   bullionInvestmentsBox.put(id, {
                     'id': id,
                     'metalType': metalType,
+                    'investmentMode': investmentMode,
                     'title': titleCtrl.text.trim().isEmpty ? metalType : titleCtrl.text.trim(),
                     'weight': weight,
                     'buyPrice': enteredPrice,
@@ -4716,12 +7049,12 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                     'date': pickedDate.toIso8601String(),
                   });
 
-                  if (deductFromAccount && selectedAccId.isNotEmpty) {
+                  if (existingItem == null && deductFromAccount && selectedAccId.isNotEmpty) {
                     final txId = "tx_bullion_${DateTime.now().millisecondsSinceEpoch}";
                     final acc = accounts.firstWhere((a) => a['id'].toString() == selectedAccId);
                     transactionsBox.put(txId, {
                       'id': txId,
-                      'title': "ધાતુ ખરીદી: ${titleCtrl.text.trim().isEmpty ? metalType : titleCtrl.text.trim()} (${weight}g)",
+                      'title': "ધાતુ ખરીદી ($investmentMode): ${titleCtrl.text.trim().isEmpty ? metalType : titleCtrl.text.trim()} (${weight}g)",
                       'amount': enteredPrice,
                       'date': pickedDate.toIso8601String(),
                       'categoryId': '4',
@@ -4745,9 +7078,16 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     );
   }
 
+  // ધાતુ વેચાણ (જેટલું વજન/રોકાણ હોય તેનાથી વધારે ન વેચી શકાય)
   void _openSellBullionDialog(Map<dynamic, dynamic> bullion) {
-    final sellPriceCtrl = TextEditingController(text: bullion['buyPrice'].toString());
+    final double maxWeight = (bullion['weight'] as num?)?.toDouble() ?? 1.0;
+    final double totalBuyPrice = (bullion['buyPrice'] as num?)?.toDouble() ?? 0.0;
+    final double livePerG = _getMetalLiveRatePerGram((bullion['metalType'] ?? '').toString());
+
+    final sellWeightCtrl = TextEditingController(text: maxWeight.toString());
+    final sellPriceCtrl = TextEditingController(text: (maxWeight * livePerG).toStringAsFixed(0));
     String depositAccountId = accounts.isNotEmpty ? accounts.first['id'].toString() : '';
+    String errorText = '';
 
     showDialog(
       context: context,
@@ -4756,8 +7096,29 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           title: Text('${bullion['title']} - વેચાણ નોંધ'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              TextField(controller: sellPriceCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'કુલ વેચાણ કિંમત (₹)')),
+              Text('ઉપલબ્ધ વજન: ${maxWeight}g (ખરીદ કિંમત: ₹${totalBuyPrice.toStringAsFixed(0)})', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.teal)),
+              const SizedBox(height: 8),
+              TextField(
+                controller: sellWeightCtrl,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(
+                  labelText: 'વેચવાનું વજન ગ્રામમાં (મહત્તમ: ${maxWeight}g)',
+                  errorText: errorText.isEmpty ? null : errorText,
+                ),
+                onChanged: (v) {
+                  final w = double.tryParse(v) ?? 0.0;
+                  if (w > 0) {
+                    sellPriceCtrl.text = (w * livePerG).toStringAsFixed(0);
+                  }
+                },
+              ),
+              TextField(
+                controller: sellPriceCtrl,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(labelText: 'કુલ વેચાણ કિંમત (₹)'),
+              ),
               DropdownButtonFormField<String>(
                 initialValue: depositAccountId,
                 decoration: const InputDecoration(labelText: 'જમા થનાર ખાતું'),
@@ -4770,8 +7131,19 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ')),
             ElevatedButton(
               onPressed: () {
+                final sellW = double.tryParse(sellWeightCtrl.text) ?? 0.0;
                 final sellPrice = double.tryParse(sellPriceCtrl.text) ?? 0.0;
-                final buyPrice = (bullion['buyPrice'] as num?)?.toDouble() ?? 0.0;
+                if (sellW <= 0 || sellPrice <= 0) return;
+
+                if (sellW > maxWeight + 0.001) {
+                  setDlgState(() {
+                    errorText = '❌ તમારી પાસે માત્ર ${maxWeight}g જથ્થો છે, તેનાથી વધારે વેચી શકાય નહીં!';
+                  });
+                  return;
+                }
+
+                final double fraction = (sellW / maxWeight).clamp(0.0, 1.0);
+                final double proportionalBuyCost = totalBuyPrice * fraction;
                 final buyDate = DateTime.tryParse(bullion['date'] ?? '') ?? DateTime.now().subtract(const Duration(days: 180));
 
                 _recordRealizedCapitalGain(
@@ -4779,28 +7151,33 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   title: bullion['title'] ?? '',
                   buyDate: buyDate,
                   sellDate: DateTime.now(),
-                  buyValue: buyPrice,
+                  buyValue: proportionalBuyCost,
                   sellValue: sellPrice,
                 );
 
-                if (sellPrice > 0) {
-                  final acc = accounts.firstWhere((a) => a['id'].toString() == depositAccountId);
-                  final txId = "tx_sell_bul_${DateTime.now().millisecondsSinceEpoch}";
-                  transactionsBox.put(txId, {
-                    'id': txId,
-                    'title': "ધાતુ વેચાણ આવક: ${bullion['title']}",
-                    'amount': sellPrice,
-                    'date': DateTime.now().toIso8601String(),
-                    'categoryId': '2',
-                    'categoryName': 'પગાર / ધંધાકીય આવક',
-                    'categoryEffect': 'incomeCredit',
-                    'categoryColor': Colors.green.toARGB32(),
-                    'accountId': depositAccountId,
-                    'accountName': acc['name'],
-                  });
+                final acc = accounts.firstWhere((a) => a['id'].toString() == depositAccountId);
+                final txId = "tx_sell_bul_${DateTime.now().millisecondsSinceEpoch}";
+                transactionsBox.put(txId, {
+                  'id': txId,
+                  'title': "ધાતુ વેચાણ આવક: ${bullion['title']} (${sellW}g)",
+                  'amount': sellPrice,
+                  'date': DateTime.now().toIso8601String(),
+                  'categoryId': '2',
+                  'categoryName': 'પગાર / ધંધાકીય આવક',
+                  'categoryEffect': 'incomeCredit',
+                  'categoryColor': Colors.green.toARGB32(),
+                  'accountId': depositAccountId,
+                  'accountName': acc['name'],
+                });
+
+                if (fraction >= 0.999) {
+                  bullionInvestmentsBox.delete(bullion['id']);
+                } else {
+                  bullion['weight'] = maxWeight - sellW;
+                  bullion['buyPrice'] = math.max(0.0, totalBuyPrice - proportionalBuyCost);
+                  bullionInvestmentsBox.put(bullion['id'], bullion);
                 }
 
-                bullionInvestmentsBox.delete(bullion['id']);
                 setState(() {});
                 Navigator.pop(ctx);
               },
@@ -4823,12 +7200,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       final w = (b['weight'] as num?)?.toDouble() ?? 0.0;
       final buyP = (b['buyPrice'] as num?)?.toDouble() ?? 0.0;
       final mType = (b['metalType'] ?? '').toString();
-      double perGram = rates['gold24']! / 10.0;
-      if (mType.contains('22K')) {
-        perGram = rates['gold22']! / 10.0;
-      } else if (mType.contains('Silver') || mType.contains('ચાંદી')) {
-        perGram = rates['silver']! / 1000.0;
-      }
+      final perGram = _getMetalLiveRatePerGram(mType);
       totalBuyCost += buyP;
       totalLiveValue += w * perGram;
     }
@@ -4854,9 +7226,18 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                           Text(bullionLastUpdated, style: const TextStyle(fontSize: 11, color: Colors.teal)),
                         ],
                       ),
-                      IconButton(
-                        icon: const Icon(Icons.refresh, color: Colors.teal),
-                        onPressed: () => _fetchLiveBullionRates(showToast: true),
+                      Row(
+                        children: [
+                          TextButton.icon(
+                            icon: const Icon(Icons.add_circle_outline, size: 16),
+                            label: const Text('નવી ધાતુ ઉમેરો', style: TextStyle(fontSize: 11.5)),
+                            onPressed: () => _openAddCustomMetalTypeDialog(() {}),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.refresh, color: Colors.teal),
+                            onPressed: () => _fetchLiveBullionRates(showToast: true),
+                          ),
+                        ],
                       ),
                     ],
                   ),
@@ -4874,15 +7255,15 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             children: [
               Expanded(
                 child: Card(
-                  color: Colors.amber.shade50,
+                  color: adaptiveTintBg(Colors.amber),
                   child: Padding(
                     padding: const EdgeInsets.all(10),
                     child: Column(
                       children: [
-                        const Text("સોનું 24K (10g)", style: TextStyle(color: Colors.brown, fontWeight: FontWeight.bold, fontSize: 12)),
-                        Text("₹${rates['gold24']!.toStringAsFixed(0)}", style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.brown)),
+                        Text("સોનું 24K (10g)", style: TextStyle(color: adaptiveAccentText(Colors.amber), fontWeight: FontWeight.bold, fontSize: 12)),
+                        Text("₹${rates['gold24']!.toStringAsFixed(0)}", style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: adaptiveAccentText(Colors.amber))),
                         const Divider(height: 10),
-                        Text("22K (10g): ₹${rates['gold22']!.toStringAsFixed(0)}", style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Colors.brown)),
+                        Text("22K (10g): ₹${rates['gold22']!.toStringAsFixed(0)}", style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: adaptiveAccentText(Colors.amber))),
                       ],
                     ),
                   ),
@@ -4890,13 +7271,13 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
               ),
               Expanded(
                 child: Card(
-                  color: Colors.blueGrey.shade50,
+                  color: adaptiveTintBg(Colors.blueGrey),
                   child: Padding(
                     padding: const EdgeInsets.all(10),
                     child: Column(
                       children: [
-                        const Text("ચાંદી (1 Kg)", style: TextStyle(color: Colors.blueGrey, fontWeight: FontWeight.bold, fontSize: 12)),
-                        Text("₹${rates['silver']!.toStringAsFixed(0)}", style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.blueGrey)),
+                        Text("ચાંદી (1 Kg)", style: TextStyle(color: adaptiveAccentText(Colors.blueGrey), fontWeight: FontWeight.bold, fontSize: 12)),
+                        Text("₹${rates['silver']!.toStringAsFixed(0)}", style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: adaptiveAccentText(Colors.blueGrey))),
                         const Divider(height: 10),
                         Text("1g: ₹${(rates['silver']! / 1000).toStringAsFixed(1)}", style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Colors.teal)),
                       ],
@@ -4907,15 +7288,15 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             ],
           ),
           Card(
-            color: Colors.teal.shade50,
+            color: adaptiveTintBg(Colors.teal),
             child: Padding(
               padding: const EdgeInsets.all(10),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  _metricColumn('ખરીદ કિંમત', '₹${totalBuyCost.toStringAsFixed(0)}', Colors.black87),
-                  _metricColumn('લાઇવ મૂલ્ય', '₹${totalLiveValue.toStringAsFixed(0)}', Colors.teal.shade900),
-                  _metricColumn('નફો / તફાવત', '₹${(totalLiveValue - totalBuyCost).toStringAsFixed(0)}', totalLiveValue >= totalBuyCost ? Colors.green.shade800 : Colors.red),
+                  _metricColumn('ખરીદ કિંમત', '₹${totalBuyCost.toStringAsFixed(0)}', primaryTextColor),
+                  _metricColumn('લાઇવ મૂલ્ય', '₹${totalLiveValue.toStringAsFixed(0)}', adaptiveAccentText(Colors.teal)),
+                  _metricColumn('નફો / તફાવત', '₹${(totalLiveValue - totalBuyCost).toStringAsFixed(0)}', totalLiveValue >= totalBuyCost ? adaptiveAccentText(Colors.green) : Colors.redAccent),
                 ],
               ),
             ),
@@ -4924,7 +7305,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text("મારું સોનું / ચાંદી રોકાણ:", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
+              const Text("મારું કિંમતી ધાતુ રોકાણ:", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
               ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
                 icon: const Icon(Icons.add, size: 16),
@@ -4934,7 +7315,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             ],
           ),
           if (bullionList.isEmpty)
-            const Padding(padding: EdgeInsets.all(20), child: Center(child: Text("કોઈ સોનું કે ચાંદીનું રોકાણ નોંધેલ નથી.")))
+            const Padding(padding: EdgeInsets.all(20), child: Center(child: Text("કોઈ સોનું, ચાંદી કે અન્ય ધાતુનું રોકાણ નોંધેલ નથી.")))
           else
             ListView.builder(
               shrinkWrap: true,
@@ -4945,12 +7326,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                 final w = (b['weight'] as num?)?.toDouble() ?? 0.0;
                 final buyP = (b['buyPrice'] as num?)?.toDouble() ?? 0.0;
                 final mType = (b['metalType'] ?? '').toString();
-                double perGram = rates['gold24']! / 10.0;
-                if (mType.contains('22K')) {
-                  perGram = rates['gold22']! / 10.0;
-                } else if (mType.contains('Silver') || mType.contains('ચાંદી')) {
-                  perGram = rates['silver']! / 1000.0;
-                }
+                final perGram = _getMetalLiveRatePerGram(mType);
                 final liveVal = w * perGram;
 
                 return Card(
@@ -4967,7 +7343,13 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                           onPressed: () => _openSellBullionDialog(b),
                           child: const Text('વેચો', style: TextStyle(fontSize: 11)),
                         ),
-                        IconButton(icon: const Icon(Icons.delete, size: 18, color: Colors.red), onPressed: () { bullionInvestmentsBox.delete(b['id']); setState(() {}); }),
+                        IconButton(
+                          icon: const Icon(Icons.delete, size: 18, color: Colors.red),
+                          onPressed: () {
+                            bullionInvestmentsBox.delete(b['id']);
+                            setState(() {});
+                          },
+                        ),
                       ],
                     ),
                   ),
@@ -4979,47 +7361,74 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     );
   }
 
-  // --- (૫-E) અન્ય મિલકત (Physical Assets) ---
+  // --- (૫-E) અન્ય મિલકત / સ્થાવર સંપત્તિ (મકાન, ખેતર, દુકાનો, પ્લોટ + Edit + વેચાણ મર્યાદા) ---
   void _openAddPhysicalAssetDialog({Map<dynamic, dynamic>? existingAsset}) {
     final titleCtrl = TextEditingController(text: existingAsset != null ? existingAsset['title'] : '');
     final valueCtrl = TextEditingController(text: existingAsset != null ? existingAsset['value'].toString() : '');
+    final curValueCtrl = TextEditingController(text: existingAsset != null ? (existingAsset['currentValue'] ?? existingAsset['value']).toString() : '');
     final locCtrl = TextEditingController(text: existingAsset != null ? existingAsset['location'] : '');
     String type = existingAsset != null ? existingAsset['type'] : 'મકાન/ફ્લેટ';
-    String selectedAccId = accounts.isNotEmpty ? accounts.first['id'].toString() : '';
+    String investmentMode = existingAsset != null ? (existingAsset['investmentMode'] ?? 'Lumpsum') : 'Lumpsum';
+    String selectedAccId = existingAsset != null && existingAsset['accountId'] != null
+        ? existingAsset['accountId'].toString()
+        : (accounts.isNotEmpty ? accounts.first['id'].toString() : '');
     bool deductFromAcc = existingAsset == null;
 
     showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDlgState) => AlertDialog(
-          title: Text(existingAsset == null ? 'નવી મિલકત ઉમેરો' : 'મિલકત સુધારો'),
+          title: Text(existingAsset == null ? 'નવી સ્થાવર મિલકત ઉમેરો' : 'સ્થાવર મિલકત સુધારો'),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(value: 'Lumpsum', label: Text('વન-ટાઇમ ખરીદી', style: TextStyle(fontSize: 11.5))),
+                    ButtonSegment(value: 'Installment', label: Text('હપ્તેથી (Installment)', style: TextStyle(fontSize: 11.5))),
+                  ],
+                  selected: {investmentMode},
+                  onSelectionChanged: (s) => setDlgState(() => investmentMode = s.first),
+                ),
+                const SizedBox(height: 8),
                 DropdownButtonFormField<String>(
                   initialValue: type,
                   decoration: const InputDecoration(labelText: 'મિલકતનો પ્રકાર'),
-                  items: ['મકાન/ફ્લેટ', 'પ્લોટ/જમીન', 'ખેતીની જમીન', 'દુકાન/ઓફિસ', 'વાહન/અન્ય']
+                  items: ['મકાન/ફ્લેટ', 'ખેતીની જમીન', 'દુકાન/ઓફિસ', 'પ્લોટ/જમીન', 'વાહન/અન્ય']
                       .map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
                   onChanged: (v) => setDlgState(() => type = v!),
                 ),
-                TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: 'નામ / વિગત')),
-                TextField(controller: locCtrl, decoration: const InputDecoration(labelText: 'સ્થળ / શહેર')),
-                TextField(controller: valueCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'કુલ કિંમત (₹)')),
-                SwitchListTile(
-                  dense: true,
-                  title: const Text('ખાતામાંથી રકમ બાદ કરી રોકાણમાં ઉમેરવી?', style: TextStyle(fontSize: 12)),
-                  value: deductFromAcc,
-                  onChanged: (v) => setDlgState(() => deductFromAcc = v),
+                TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: 'નામ / વિગત (દા.ત. ૨ BHK ફ્લેટ, ખેતર, દુકાન)')),
+                TextField(controller: locCtrl, decoration: const InputDecoration(labelText: 'સ્થળ / શહેર / ગામ')),
+                TextField(
+                  controller: valueCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(labelText: 'ખરીદ રોકાણ કિંમત (₹)'),
+                  onChanged: (v) {
+                    if (existingAsset == null) curValueCtrl.text = v;
+                  },
                 ),
-                if (deductFromAcc)
-                  DropdownButtonFormField<String>(
-                    initialValue: selectedAccId,
-                    decoration: const InputDecoration(labelText: 'બેંક ખાતું'),
-                    items: accounts.map((a) => DropdownMenuItem(value: a['id'].toString(), child: Text(a['name']))).toList(),
-                    onChanged: (v) => setDlgState(() => selectedAccId = v!),
+                TextField(
+                  controller: curValueCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(labelText: 'હાલનું અંદાજિત બજાર મૂલ્ય (₹)'),
+                ),
+                if (existingAsset == null) ...[
+                  SwitchListTile(
+                    dense: true,
+                    title: const Text('ખાતામાંથી રકમ બાદ કરી રોકાણમાં ઉમેરવી?', style: TextStyle(fontSize: 12)),
+                    value: deductFromAcc,
+                    onChanged: (v) => setDlgState(() => deductFromAcc = v),
                   ),
+                  if (deductFromAcc)
+                    DropdownButtonFormField<String>(
+                      initialValue: selectedAccId,
+                      decoration: const InputDecoration(labelText: 'બેંક ખાતું'),
+                      items: accounts.map((a) => DropdownMenuItem(value: a['id'].toString(), child: Text(a['name']))).toList(),
+                      onChanged: (v) => setDlgState(() => selectedAccId = v!),
+                    ),
+                ],
               ],
             ),
           ),
@@ -5028,6 +7437,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             ElevatedButton(
               onPressed: () {
                 final val = double.tryParse(valueCtrl.text) ?? 0.0;
+                final curVal = double.tryParse(curValueCtrl.text) ?? val;
                 if (val <= 0 || titleCtrl.text.isEmpty) return;
                 final id = existingAsset != null ? existingAsset['id'] : "asset_${DateTime.now().millisecondsSinceEpoch}";
 
@@ -5035,17 +7445,20 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   'id': id,
                   'title': titleCtrl.text,
                   'type': type,
+                  'investmentMode': investmentMode,
                   'location': locCtrl.text,
                   'value': val,
-                  'date': DateTime.now().toIso8601String(),
+                  'currentValue': curVal,
+                  'accountId': selectedAccId,
+                  'date': existingAsset != null ? existingAsset['date'] : DateTime.now().toIso8601String(),
                 });
 
-                if (deductFromAcc) {
+                if (existingAsset == null && deductFromAcc) {
                   final acc = accounts.firstWhere((a) => a['id'].toString() == selectedAccId);
                   final txId = "tx_asset_${DateTime.now().millisecondsSinceEpoch}";
                   transactionsBox.put(txId, {
                     'id': txId,
-                    'title': "મિલકત ખરીદી: ${titleCtrl.text}",
+                    'title': "મિલકત ખરીદી ($type): ${titleCtrl.text}",
                     'amount': val,
                     'date': DateTime.now().toIso8601String(),
                     'categoryId': '7',
@@ -5069,8 +7482,11 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   }
 
   void _openSellPhysicalAssetDialog(Map<dynamic, dynamic> asset) {
-    final sellPriceCtrl = TextEditingController(text: asset['value'].toString());
+    final double buyVal = (asset['value'] as num?)?.toDouble() ?? 0.0;
+    final sellSharePctCtrl = TextEditingController(text: '100');
+    final sellPriceCtrl = TextEditingController(text: (asset['currentValue'] ?? asset['value']).toString());
     String depositAccountId = accounts.isNotEmpty ? accounts.first['id'].toString() : '';
+    String errorText = '';
 
     showDialog(
       context: context,
@@ -5079,8 +7495,23 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           title: Text('${asset['title']} - વેચાણ નોંધ'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              TextField(controller: sellPriceCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'કુલ વેચાણ કિંમત (₹)')),
+              Text('મૂળ રોકાણ કિંમત: ₹${buyVal.toStringAsFixed(0)} (મહત્તમ હિસ્સો: 100%)', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.teal)),
+              const SizedBox(height: 8),
+              TextField(
+                controller: sellSharePctCtrl,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(
+                  labelText: 'વેચાણ હિસ્સો % (મહત્તમ 100%)',
+                  errorText: errorText.isEmpty ? null : errorText,
+                ),
+              ),
+              TextField(
+                controller: sellPriceCtrl,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(labelText: 'મળેલ વેચાણ કિંમત (₹)'),
+              ),
               DropdownButtonFormField<String>(
                 initialValue: depositAccountId,
                 decoration: const InputDecoration(labelText: 'જમા થનાર ખાતું'),
@@ -5093,8 +7524,18 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ')),
             ElevatedButton(
               onPressed: () {
+                final sharePct = double.tryParse(sellSharePctCtrl.text) ?? 0.0;
                 final sellPrice = double.tryParse(sellPriceCtrl.text) ?? 0.0;
-                final buyPrice = (asset['value'] as num?)?.toDouble() ?? 0.0;
+                if (sharePct <= 0 || sellPrice <= 0) return;
+                if (sharePct > 100.0) {
+                  setDlgState(() {
+                    errorText = '❌ તમારા 100% રોકાણ હિસ્સા કરતાં વધારે વેચી શકાય નહીં!';
+                  });
+                  return;
+                }
+
+                final double fraction = (sharePct / 100.0).clamp(0.0, 1.0);
+                final double costSold = buyVal * fraction;
                 final buyDate = DateTime.tryParse(asset['date'] ?? '') ?? DateTime.now().subtract(const Duration(days: 800));
 
                 _recordRealizedCapitalGain(
@@ -5102,7 +7543,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   title: asset['title'] ?? '',
                   buyDate: buyDate,
                   sellDate: DateTime.now(),
-                  buyValue: buyPrice,
+                  buyValue: costSold,
                   sellValue: sellPrice,
                 );
 
@@ -5121,7 +7562,14 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   'accountName': acc['name'],
                 });
 
-                physicalAssetsBox.delete(asset['id']);
+                if (fraction >= 0.999) {
+                  physicalAssetsBox.delete(asset['id']);
+                } else {
+                  asset['value'] = math.max(0.0, buyVal - costSold);
+                  asset['currentValue'] = math.max(0.0, ((asset['currentValue'] as num?)?.toDouble() ?? buyVal) * (1.0 - fraction));
+                  physicalAssetsBox.put(asset['id'], asset);
+                }
+
                 setState(() {});
                 Navigator.pop(ctx);
               },
@@ -5135,7 +7583,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
 
   Widget _buildAssetsTab() {
     final assets = physicalAssetsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
-    double totalVal = assets.fold(0.0, (sum, i) => sum + (i['value'] as num).toDouble());
+    double totalVal = assets.fold(0.0, (sum, i) => sum + ((i['currentValue'] ?? i['value']) as num).toDouble());
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(12),
@@ -5155,7 +7603,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           ),
           const SizedBox(height: 8),
           assets.isEmpty
-              ? const Padding(padding: EdgeInsets.all(30.0), child: Text("કોઈ મકાન, પ્લોટ કે જમીન ઉમેરેલ નથી."))
+              ? const Padding(padding: EdgeInsets.all(30.0), child: Text("કોઈ મકાન, ખેતર, દુકાન કે પ્લોટ ઉમેરેલ નથી."))
               : ListView.builder(
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
@@ -5165,17 +7613,28 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                     return Card(
                       child: ListTile(
                         leading: const Icon(Icons.home_work, color: Colors.teal),
-                        title: Text(a['title']),
-                        subtitle: Text("${a['type']} • ${a['location']}\nકિંમત: ₹${a['value']}"),
+                        title: Text(a['title'], style: const TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: Text("${a['type']} • ${a['location']}\nખરીદ: ₹${a['value']} | હાલનું મૂલ્ય: ₹${a['currentValue'] ?? a['value']}"),
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
+                            IconButton(
+                              icon: const Icon(Icons.edit, size: 18, color: Colors.teal),
+                              tooltip: 'સુધારો',
+                              onPressed: () => _openAddPhysicalAssetDialog(existingAsset: a),
+                            ),
                             ElevatedButton(
                               style: ElevatedButton.styleFrom(backgroundColor: Colors.orange, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 8)),
                               onPressed: () => _openSellPhysicalAssetDialog(a),
                               child: const Text('વેચો', style: TextStyle(fontSize: 11)),
                             ),
-                            IconButton(icon: const Icon(Icons.delete, size: 18, color: Colors.red), onPressed: () { physicalAssetsBox.delete(a['id']); setState(() {}); }),
+                            IconButton(
+                              icon: const Icon(Icons.delete, size: 18, color: Colors.red),
+                              onPressed: () {
+                                physicalAssetsBox.delete(a['id']);
+                                setState(() {});
+                              },
+                            ),
                           ],
                         ),
                       ),
@@ -5187,7 +7646,250 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     );
   }
 
-  // --- સેટિંગ્સ ડાયલોગ (બેકઅપ/રિસ્ટોર, ઓટો-લોક સમય, ક્રેડિટ કાર્ડ ઓટો બિલ વગેરે) ---
+
+  // =========================================================
+  // સેટિંગ્સ ડાયલોગ:
+  // - થીમ કલર બદલો
+  // - ગેલેરીમાંથી ફોટો સિલેક્ટ કરી બેકગ્રાઉન્ડમાં સેટ કરો
+  // - પ્રથમ સ્ક્રીનનું શીર્ષક બદલો
+  // - કેટેગરી મેનેજર (સુધારો + પ્રકાર: ખર્ચ, આવક, રોકાણ)
+  // - બેંક અને ક્રેડિટ કાર્ડ ખાતા મેનેજર (બેંકનું નામ, બ્રાન્ચ, પ્રકાર, વ્યાજ દર, પ્રારંભિક કિંમત, કાર્ડ બેંક/NBFC, કાર્ડ પ્રકાર, લિમિટ અને વોર્નિંગ)
+  // - ઓટો-પે / SIP રીમાઇન્ડર (તારીખ, સમય, રીંગટોન, ફ્લેશ મેસેજ)
+  // - PDF + Excel (.xls / .csv) રિપોર્ટ એક્સપોર્ટ
+  // =========================================================
+  void _openThemeColorPickerDialog() {
+    final List<Map<String, dynamic>> palette = [
+      {'name': 'ટીલ (Teal)', 'color': Colors.teal},
+      {'name': 'ઇન્ડિગો (Indigo)', 'color': Colors.indigo},
+      {'name': 'બ્લુ (Blue)', 'color': Colors.blue},
+      {'name': 'ગ્રીન (Green)', 'color': Colors.green},
+      {'name': 'ડીપ પર્પલ (Purple)', 'color': Colors.deepPurple},
+      {'name': 'ઓરેન્જ (Deep Orange)', 'color': Colors.deepOrange},
+      {'name': 'પિંક (Pink)', 'color': Colors.pink},
+      {'name': 'રેડ (Red)', 'color': Colors.red},
+      {'name': 'ગોલ્ડ / એમ્બર (Amber)', 'color': Colors.amber.shade800},
+      {'name': 'બ્રાઉન (Brown)', 'color': Colors.brown},
+      {'name': 'સિયાન (Cyan)', 'color': Colors.cyan.shade700},
+      {'name': 'બ્લુ ગ્રે (Blue Grey)', 'color': Colors.blueGrey},
+    ];
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('થીમ કલર પસંદ કરો'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: palette.map((item) {
+              final Color c = item['color'] as Color;
+              final bool isSel = appSeedColor.value.toARGB32() == c.toARGB32();
+              return InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () {
+                  appSeedColor.value = c;
+                  settingsBox.put('primaryColor', c.toARGB32());
+                  setState(() {});
+                  Navigator.pop(ctx);
+                },
+                child: Container(
+                  width: 130,
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: c.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: c, width: isSel ? 2.5 : 1),
+                  ),
+                  child: Row(
+                    children: [
+                      CircleAvatar(radius: 12, backgroundColor: c, child: isSel ? const Icon(Icons.check, size: 14, color: Colors.white) : null),
+                      const SizedBox(width: 8),
+                      Expanded(child: Text(item['name'].toString(), style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold))),
+                    ],
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickAndSetBackgroundImage() async {
+    try {
+      final picker = ImagePicker();
+      final XFile? picked = await picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
+      if (picked != null && picked.path.isNotEmpty) {
+        appBackgroundImage.value = picked.path;
+        await settingsBox.put('backgroundImage', picked.path);
+        if (mounted) {
+          setState(() {});
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('✅ ગેલેરીમાંથી બેકગ્રાઉન્ડ ફોટો સેટ થઈ ગયો!'), backgroundColor: Colors.teal),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('ફોટો પસંદ કરવામાં ભૂલ: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  void _openChangeScreenTitleDialog() {
+    final homeTitleCtrl = TextEditingController(text: appTitle);
+    final invTitleCtrl = TextEditingController(text: settingsBox.get('customInvTitle', defaultValue: 'ઇન્વેસ્ટમેન્ટ પોર્ટફોલિયો'));
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('સ્ક્રીનનું શીર્ષક બદલો'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: homeTitleCtrl,
+              decoration: const InputDecoration(labelText: 'પ્રથમ સ્ક્રીનનું શીર્ષક (દા.ત. નાણાકીય હિસાબો)'),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: invTitleCtrl,
+              decoration: const InputDecoration(labelText: 'ઇન્વેસ્ટમેન્ટ સ્ક્રીનનું શીર્ષક'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ')),
+          ElevatedButton(
+            onPressed: () {
+              final newTitle = homeTitleCtrl.text.trim();
+              if (newTitle.isNotEmpty) {
+                appTitle = newTitle;
+                settingsBox.put('customAppTitle', appTitle);
+              }
+              final newInv = invTitleCtrl.text.trim();
+              if (newInv.isNotEmpty) {
+                settingsBox.put('customInvTitle', newInv);
+              }
+              setState(() {});
+              Navigator.pop(ctx);
+            },
+            child: const Text('સેવ કરો'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // =========================================================
+  // PDF ની સાથે Excel ફાઇલ (.xls અને .csv) માં પણ રિપોર્ટ બનાવતું ફંક્શન
+  // =========================================================
+  Future<void> _exportReportToExcelFile() async {
+    try {
+      final inc = _calculateTotal('incomeCredit');
+      final exp = _calculateTotal('expenseDebit') + _calculateTotal('loanRepay');
+      final inv = _calculateTotal('assetIncrease');
+      final net = inc - (exp + inv);
+      final txList = filteredTransactions;
+
+      final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+      final dirs = await _getCandidateBackupDirectories();
+      final targetDir = dirs.firstWhere((d) => d.path.contains('/storage/emulated/0'), orElse: () => dirs.first);
+
+      // ૧. Microsoft Excel (.xls SpreadsheetML XML) જેથી ગુજરાતી જોડાક્ષરો અને ફોર્મેટિંગ ૧૦૦% પરફેક્ટ ખૂલે
+      final StringBuffer xlsXml = StringBuffer();
+      xlsXml.writeln('<?xml version="1.0" encoding="UTF-8"?>');
+      xlsXml.writeln('<?mso-application progid="Excel.Sheet"?>');
+      xlsXml.writeln('<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">');
+      xlsXml.writeln('<Worksheet ss:Name="નાણાકીય રિપોર્ટ"><Table>');
+      xlsXml.writeln('<Row><Cell><Data ss:Type="String">$appTitle - નાણાકીય હિસાબ રિપોર્ટ (${selectedFilter.name.toUpperCase()})</Data></Cell></Row>');
+      xlsXml.writeln('<Row><Cell><Data ss:Type="String">કુલ આવક</Data></Cell><Cell><Data ss:Type="Number">$inc</Data></Cell></Row>');
+      xlsXml.writeln('<Row><Cell><Data ss:Type="String">કુલ ખર્ચ</Data></Cell><Cell><Data ss:Type="Number">$exp</Data></Cell></Row>');
+      xlsXml.writeln('<Row><Cell><Data ss:Type="String">કુલ રોકાણ</Data></Cell><Cell><Data ss:Type="Number">$inv</Data></Cell></Row>');
+      xlsXml.writeln('<Row><Cell><Data ss:Type="String">નેટ બચત</Data></Cell><Cell><Data ss:Type="Number">$net</Data></Cell></Row>');
+      xlsXml.writeln('<Row></Row>');
+      xlsXml.writeln('<Row><Cell><Data ss:Type="String">તારીખ</Data></Cell><Cell><Data ss:Type="String">વિગત / શીર્ષક</Data></Cell><Cell><Data ss:Type="String">કેટેગરી</Data></Cell><Cell><Data ss:Type="String">પ્રકાર</Data></Cell><Cell><Data ss:Type="String">ખાતું</Data></Cell><Cell><Data ss:Type="String">રકમ (₹)</Data></Cell></Row>');
+
+      // ૨. UTF-8 BOM સાથે CSV ફાઇલ
+      final StringBuffer csvBuf = StringBuffer('\uFEFF');
+      csvBuf.writeln('તારીખ,વિગત / શીર્ષક,કેટેગરી,પ્રકાર,ખાતું,રકમ (₹)');
+
+      String escapeXml(String s) => s
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;');
+
+      for (final tx in txList) {
+        final dt = DateFormat('dd/MM/yyyy').format(DateTime.parse(tx['date']));
+        final title = (tx['title'] ?? '').toString();
+        final cat = (tx['categoryName'] ?? '').toString();
+        final eff = tx['categoryEffect'] == 'incomeCredit'
+            ? 'આવક'
+            : (tx['categoryEffect'] == 'assetIncrease' ? 'રોકાણ' : 'ખર્ચ');
+        final acc = (tx['accountName'] ?? '').toString();
+        final amt = ((tx['amount'] as num?)?.toDouble() ?? 0.0);
+
+        xlsXml.writeln(
+          '<Row>'
+          '<Cell><Data ss:Type="String">${escapeXml(dt)}</Data></Cell>'
+          '<Cell><Data ss:Type="String">${escapeXml(title)}</Data></Cell>'
+          '<Cell><Data ss:Type="String">${escapeXml(cat)}</Data></Cell>'
+          '<Cell><Data ss:Type="String">${escapeXml(eff)}</Data></Cell>'
+          '<Cell><Data ss:Type="String">${escapeXml(acc)}</Data></Cell>'
+          '<Cell><Data ss:Type="Number">$amt</Data></Cell>'
+          '</Row>',
+        );
+
+        final safeTitle = title.replaceAll('"', '""');
+        final safeCat = cat.replaceAll('"', '""');
+        final safeAcc = acc.replaceAll('"', '""');
+        csvBuf.writeln('"$dt","$safeTitle","$safeCat","$eff","$safeAcc",$amt');
+      }
+
+      xlsXml.writeln('</Table></Worksheet></Workbook>');
+
+      final xlsFile = File('${targetDir.path}/Finance_Report_$timestamp.xls');
+      final csvFile = File('${targetDir.path}/Finance_Report_$timestamp.csv');
+      await xlsFile.writeAsString(xlsXml.toString(), flush: true);
+      await csvFile.writeAsString(csvBuf.toString(), flush: true);
+
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.table_view, color: Colors.green),
+                SizedBox(width: 8),
+                Expanded(child: Text('Excel રિપોર્ટ તૈયાર થઈ ગયો!')),
+              ],
+            ),
+            content: Text(
+              'તમારો સંપૂર્ણ હિસાબ એક્સેલ ફાઇલ તરીકે સેવ થઈ ગયો છે (જેમાં ગુજરાતી જોડાક્ષરો ૧૦૦% સ્પષ્ટ દેખાશે):\n\n'
+              '📊 Excel ફાઇલ:\n${xlsFile.path}\n\n'
+              '📄 CSV ફાઇલ:\n${csvFile.path}',
+              style: const TextStyle(fontSize: 13),
+            ),
+            actions: [
+              ElevatedButton(onPressed: () => Navigator.pop(ctx), child: const Text('સમજાઈ ગયું')),
+            ],
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Excel બનાવવામાં ભૂલ: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
   void _openSettingsDialog() {
     showModalBottomSheet(
       context: context,
@@ -5211,10 +7913,76 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
               ListTile(
                 leading: const Icon(Icons.backup, color: Colors.teal),
                 title: const Text('ઇન્ટરનલ મેમરીમાં બેકઅપ અને રિસ્ટોર', style: TextStyle(fontWeight: FontWeight.bold)),
-                subtitle: const Text('ફોનમાં બેકઅપ લો અથવા જૂના બેકઅપમાંથી ડેટા રિસ્ટોર કરો'),
+                subtitle: const Text('દર વખતે અલગ નામથી બેકઅપ સેવ કરો અને રિસ્ટોર કરો'),
                 onTap: () {
                   Navigator.pop(ctx);
                   _openBackupAndRestoreDialog();
+                },
+              ),
+              ListTile(
+                leading: Icon(Icons.color_lens, color: appSeedColor.value),
+                title: const Text('એપ્લિકેશન થીમ કલર બદલો'),
+                subtitle: const Text('તમારી પસંદગીનો રંગ પસંદ કરો'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _openThemeColorPickerDialog();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.wallpaper, color: Colors.purple),
+                title: const Text('ગેલેરીમાંથી ફોટો બેકગ્રાઉન્ડમાં સેટ કરો'),
+                subtitle: Text(appBackgroundImage.value != null ? 'બેકગ્રાઉન્ડ ફોટો સક્રિય છે' : 'કોઈ ફોટો સેટ કરેલ નથી'),
+                trailing: appBackgroundImage.value != null
+                    ? IconButton(
+                        icon: const Icon(Icons.clear, color: Colors.red),
+                        tooltip: 'ફોટો દૂર કરો',
+                        onPressed: () {
+                          appBackgroundImage.value = null;
+                          settingsBox.delete('backgroundImage');
+                          setState(() {});
+                          Navigator.pop(ctx);
+                        },
+                      )
+                    : null,
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _pickAndSetBackgroundImage();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.title, color: Colors.blue),
+                title: const Text('પ્રથમ સ્ક્રીનનું શીર્ષક બદલો'),
+                subtitle: Text('હાલનું શીર્ષક: $appTitle'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _openChangeScreenTitleDialog();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.category, color: Colors.orange),
+                title: const Text('કેટેગરી મેનેજર (સુધારો / પ્રકાર બદલો)'),
+                subtitle: const Text('ખર્ચ, આવક કે રોકાણ પ્રકાર બદલો અને નવી ઉમેરો'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _openCategoryManager();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.account_balance, color: Colors.green),
+                title: const Text('બેંક અને ક્રેડિટ કાર્ડ ખાતાઓ સુધારો'),
+                subtitle: const Text('બેંક નામ, બ્રાન્ચ, પ્રકાર, વ્યાજ દર, કાર્ડ લિમિટ અને વોર્નિંગ'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _openAccountManager();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.notifications_active, color: Colors.indigo),
+                title: const Text('ઓટો-પે / SIP / ક્રેડિટ કાર્ડ / વીમા રીમાઇન્ડર'),
+                subtitle: const Text('તારીખ, સમય, રીંગટોન અને મોબાઇલ ફ્લેશ મેસેજ સેટિંગ્સ'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _openAutoPayManager();
                 },
               ),
               StatefulBuilder(
@@ -5259,31 +8027,6 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                 },
               ),
               ListTile(
-                leading: const Icon(Icons.autorenew, color: Colors.indigo),
-                title: const Text('EMI / ક્રેડિટ કાર્ડ / વીમા (PLI, Health, Term) મેનેજર'),
-                subtitle: const Text('ક્રેડિટ કાર્ડ બિલિંગ ડેટ, પ્રીમિયમ અને ઓટો-પે સેટિંગ્સ'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _openAutoPayManager();
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.account_balance, color: Colors.green),
-                title: const Text('બેંક અને ક્રેડિટ કાર્ડ ખાતાઓ'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _openAccountManager();
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.category, color: Colors.orange),
-                title: const Text('કેટેગરી મેનેજર (Add / Edit / Delete)'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _openCategoryManager();
-                },
-              ),
-              ListTile(
                 leading: Icon(appThemeMode.value == ThemeMode.dark ? Icons.dark_mode : Icons.light_mode, color: Colors.amber),
                 title: const Text('લાઇટ / ડાર્ક મોડ'),
                 trailing: Switch(
@@ -5297,9 +8040,37 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
               ),
               ListTile(
                 leading: const Icon(Icons.picture_as_pdf, color: Colors.red),
-                title: const Text('સંપૂર્ણ હિસાબ એક્સપોર્ટ (PDF)'),
+                title: const Text('સંપૂર્ણ હિસાબ એક્સપોર્ટ (PDF રિપોર્ટ)'),
                 onTap: () async {
                   Navigator.pop(ctx);
+                  final inc = _calculateTotal('incomeCredit');
+                  final exp = _calculateTotal('expenseDebit') + _calculateTotal('loanRepay');
+                  final inv = _calculateTotal('assetIncrease');
+                  await ExportService.exportToPDF(
+                    filteredTransactions,
+                    inc,
+                    exp,
+                    inv,
+                    inc - (exp + inv),
+                    selectedFilter.name.toUpperCase(),
+                  );
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.table_chart, color: Colors.green),
+                title: const Text('સંપૂર્ણ હિસાબ એક્સપોર્ટ (Excel અને CSV ફાઇલ)'),
+                subtitle: const Text('PDF ની સાથે એક્સેલ (.xls / .csv) માં રિપોર્ટ બનાવો'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  await _exportReportToExcelFile();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.done_all, color: Colors.teal),
+                title: const Text('PDF + Excel બંને રિપોર્ટ એકસાથે બનાવો'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  await _exportReportToExcelFile();
                   final inc = _calculateTotal('incomeCredit');
                   final exp = _calculateTotal('expenseDebit') + _calculateTotal('loanRepay');
                   final inv = _calculateTotal('assetIncrease');
@@ -5344,7 +8115,9 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     );
   }
 
-  // --- (૩) વિસ્તૃત EMI / ક્રેડિટ કાર્ડ / વીમા પ્રીમિયમ (PLI, Health, Term, Vehicle) મેનેજર ---
+  // =========================================================
+  // વિસ્તૃત EMI / ક્રેડિટ કાર્ડ / SIP / વીમા મેનેજર (તારીખ, સમય, રીંગટોન અને મોબાઇલ ફ્લેશ મેસેજ સાથે)
+  // =========================================================
   void _openAutoPayManager() {
     showDialog(
       context: context,
@@ -5352,35 +8125,46 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
         builder: (context, setDlgState) {
           final list = autoPayBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
           return AlertDialog(
-            title: const Text('EMI / ક્રેડિટ કાર્ડ / વીમા મેનેજર'),
+            title: const Text('ઓટો-પે / SIP / રીમાઇન્ડર મેનેજર'),
             content: SizedBox(
               width: double.maxFinite,
-              height: 400,
+              height: 410,
               child: list.isEmpty
-                  ? const Center(child: Text('કોઈ EMI, ક્રેડિટ કાર્ડ કે વીમા પ્રીમિયમ સેટ કરેલ નથી.'))
+                  ? const Center(child: Text('કોઈ EMI, SIP, ક્રેડિટ કાર્ડ કે વીમા રીમાઇન્ડર સેટ કરેલ નથી.'))
                   : ListView.builder(
                       itemCount: list.length,
                       itemBuilder: (context, i) {
                         final a = list[i];
                         final isAuto = (a['executionMode'] ?? 'auto') == 'auto';
                         final isCc = a['type'] == 'CreditCard';
+                        final int h = (a['reminderHour'] as num?)?.toInt() ?? 9;
+                        final int m = (a['reminderMinute'] as num?)?.toInt() ?? 0;
+                        final String tStr = TimeOfDay(hour: h, minute: m).format(context);
+                        final String rTone = (a['ringtoneName'] ?? 'ડિફોલ્ટ અલાર્મ').toString();
+                        final bool flashOn = a['enableFlashMessage'] ?? true;
+
                         return Card(
                           margin: const EdgeInsets.symmetric(vertical: 4),
                           child: ListTile(
                             leading: Icon(
-                              isCc ? Icons.credit_card : Icons.security,
+                              isCc ? Icons.credit_card : Icons.notifications_active,
                               color: isAuto ? Colors.teal : Colors.orange,
                             ),
                             title: Text("${a['type']}: ${a['toTarget'] ?? ''} (₹${(a['amount'] as num).toStringAsFixed(0)})", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                             subtitle: Text(
-                              isCc
-                                  ? "બિલિંગ તારીખ: ${a['billingDay'] ?? 1} | ડ્યુ તારીખ: ${a['day']} • [${a['autoGenerateFromDaily'] == true ? 'દૈનિકમાંથી ઓટો બિલ' : 'ફિક્સ'}]"
-                                  : "ચુકવણી તારીખ: ${a['day']} • [${isAuto ? 'ઓટો-કપાત' : 'મેન્યુઅલ રીમાઇન્ડર'}]",
-                              style: const TextStyle(fontSize: 11.5),
+                              "તારીખ: ${a['day']} • સમય: $tStr • [${isAuto ? 'ઓટો-પે' : 'રીમાઇન્ડર'}]\n"
+                              "🎵 ટોન: $rTone • ${flashOn ? '⚡ ફ્લેશ મેસેજ ON' : 'ફ્લેશ OFF'}",
+                              style: const TextStyle(fontSize: 11),
                             ),
+                            isThreeLine: true,
                             trailing: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
+                                IconButton(
+                                  icon: const Icon(Icons.flash_on, size: 18, color: Colors.amber),
+                                  tooltip: 'ફ્લેશ મેસેજ ટેસ્ટ કરો',
+                                  onPressed: () => _showFlashReminderPopup(a),
+                                ),
                                 IconButton(
                                   icon: const Icon(Icons.edit, size: 18, color: Colors.teal),
                                   onPressed: () {
@@ -5424,34 +8208,54 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     final dayCtrl = TextEditingController(text: existingItem != null ? existingItem['day'].toString() : '5');
     final billingDayCtrl = TextEditingController(text: existingItem != null ? (existingItem['billingDay']?.toString() ?? '1') : '1');
 
-    String type = existingItem != null ? existingItem['type'] : 'CreditCard';
+    String type = existingItem != null ? existingItem['type'] : 'SIP';
     String mode = existingItem != null ? (existingItem['executionMode'] ?? 'auto') : 'auto';
     bool autoGenFromDaily = existingItem != null ? (existingItem['autoGenerateFromDaily'] == true) : isAutoCcBillEnabled;
+
+    int remHour = existingItem != null ? ((existingItem['reminderHour'] as num?)?.toInt() ?? 9) : 9;
+    int remMin = existingItem != null ? ((existingItem['reminderMinute'] as num?)?.toInt() ?? 0) : 0;
+    TimeOfDay selectedReminderTime = TimeOfDay(hour: remHour, minute: remMin);
+
+    final List<String> ringtoneOptions = [
+      'ડિફોલ્ટ અલાર્મ ટોન (Default Alarm)',
+      'નોટિફિકેશન બીપ (Notification Chime)',
+      'ક્લાસિક બેલ રિંગટોન (Classic Bell)',
+      'ઇમરજન્સી અલર્ટ (Urgent Beep)',
+      'સોફ્ટ મેલોડી (Soft Tone)',
+    ];
+    String selectedRingtone = existingItem != null && ringtoneOptions.contains(existingItem['ringtoneName'])
+        ? existingItem['ringtoneName'].toString()
+        : ringtoneOptions.first;
+    bool enableFlashMessage = existingItem != null ? (existingItem['enableFlashMessage'] ?? true) : true;
+    DateTime? specificReminderDate = existingItem != null && existingItem['specificReminderDate'] != null
+        ? DateTime.tryParse(existingItem['specificReminderDate'].toString())
+        : null;
 
     String fromAccId = existingItem != null
         ? existingItem['fromAccountId']
         : (accounts.isNotEmpty ? accounts.first['id'].toString() : '');
     String ccAccId = existingItem != null && existingItem['ccAccountId'] != null
         ? existingItem['ccAccountId']
-        : (accounts.firstWhere((a) => a['type'].toString().contains('Credit'), orElse: () => accounts.first)['id'].toString());
+        : (accounts.firstWhere((a) => _isCreditCardAccount(a), orElse: () => accounts.first)['id'].toString());
 
     showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDlgState) => AlertDialog(
-          title: Text(existingItem == null ? 'નવું EMI / કાર્ડ / વીમો ઉમેરો' : 'સુધારો'),
+          title: Text(existingItem == null ? 'નવું ઓટો-પે / SIP રીમાઇન્ડર' : 'રીમાઇન્ડર સુધારો'),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 DropdownButtonFormField<String>(
                   initialValue: type,
                   isExpanded: true,
                   decoration: const InputDecoration(labelText: 'પ્રકાર પસંદ કરો'),
                   items: const [
+                    DropdownMenuItem(value: 'SIP', child: Text('મ્યુચ્યુઅલ ફંડ / શેર SIP')),
                     DropdownMenuItem(value: 'CreditCard', child: Text('ક્રેડિટ કાર્ડ બિલ (Credit Card)')),
                     DropdownMenuItem(value: 'EMI', child: Text('લોન EMI હપ્તો')),
-                    DropdownMenuItem(value: 'SIP', child: Text('મ્યુચ્યુઅલ ફંડ / શેર SIP')),
                     DropdownMenuItem(value: 'PLI', child: Text('PLI / LIC પ્રીમિયમ')),
                     DropdownMenuItem(value: 'HealthInsurance', child: Text('હેલ્થ વીમો (Health Insurance)')),
                     DropdownMenuItem(value: 'TermInsurance', child: Text('ટર્મ ઇન્સ્યોરન્સ (Term Plan)')),
@@ -5463,7 +8267,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                     if (v != null) setDlgState(() => type = v);
                   },
                 ),
-                TextField(controller: targetCtrl, decoration: const InputDecoration(labelText: 'નામ / વિગત (દા.ત. HDFC CC, PLI પોલિસી, કાર વીમો)')),
+                TextField(controller: targetCtrl, decoration: const InputDecoration(labelText: 'નામ / વિગત (દા.ત. HDFC SIP, SBI CC, PLI)')),
                 if (type == 'CreditCard') ...[
                   const SizedBox(height: 8),
                   DropdownButtonFormField<String>(
@@ -5480,13 +8284,84 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   SwitchListTile(
                     dense: true,
                     title: const Text('દૈનિક નોંધમાંથી ક્રેડિટ કાર્ડ બિલ ઓટો જનરેટ કરો', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                    subtitle: const Text('જો ON હશે તો જ દૈનિક વ્યવહારોમાંથી બિલ બનશે', style: TextStyle(fontSize: 11)),
                     value: autoGenFromDaily,
                     onChanged: (val) => setDlgState(() => autoGenFromDaily = val),
                   ),
                 ],
                 TextField(controller: amtCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'રકમ / પ્રીમિયમ (₹)')),
-                TextField(controller: dayCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'ચુકવણી / કપાત તારીખ (Due Date 1-28)')),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: dayCtrl,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(labelText: 'દર મહિનાની તારીખ (1-31)'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.access_time, size: 16),
+                        label: Text('સમય: ${selectedReminderTime.format(context)}', style: const TextStyle(fontSize: 11.5)),
+                        onPressed: () async {
+                          final t = await showTimePicker(context: context, initialTime: selectedReminderTime);
+                          if (t != null) setDlgState(() => selectedReminderTime = t);
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.event, size: 16),
+                  label: Text(
+                    specificReminderDate != null
+                        ? 'ચોક્કસ તારીખ: ${DateFormat('dd/MM/yyyy').format(specificReminderDate!)}'
+                        : 'ચોક્કસ તારીખ પસંદ કરો (વૈકલ્પિક)',
+                    style: const TextStyle(fontSize: 11.5),
+                  ),
+                  onPressed: () async {
+                    final d = await showDatePicker(
+                      context: context,
+                      initialDate: _clampDate1800To2100(specificReminderDate ?? DateTime.now()),
+                      firstDate: DateTime(1800, 1, 1),
+                      lastDate: DateTime(2100, 12, 31),
+                    );
+                    if (d != null) {
+                      setDlgState(() {
+                        specificReminderDate = d;
+                        dayCtrl.text = d.day.toString();
+                      });
+                    }
+                  },
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        initialValue: selectedRingtone,
+                        isExpanded: true,
+                        decoration: const InputDecoration(labelText: 'રીમાઇન્ડર રિંગટોન પસંદ કરો'),
+                        items: ringtoneOptions.map((r) => DropdownMenuItem(value: r, child: Text(r, style: const TextStyle(fontSize: 11.5)))).toList(),
+                        onChanged: (v) => setDlgState(() => selectedRingtone = v!),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.volume_up, color: Colors.teal),
+                      tooltip: 'રિંગટોન સાંભળો',
+                      onPressed: () => _playSelectedRingtone(selectedRingtone),
+                    ),
+                  ],
+                ),
+                SwitchListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('મોબાઇલમાં ફ્લેશ મેસેજ (Flash Alert Popup) તરીકે બતાવો', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                  subtitle: const Text('નિર્ધારિત તારીખ અને સમયે સ્ક્રીન પર રિંગટોન સાથે ફ્લેશ મેસેજ આવશે', style: TextStyle(fontSize: 10.5)),
+                  value: enableFlashMessage,
+                  onChanged: (v) => setDlgState(() => enableFlashMessage = v),
+                ),
                 DropdownButtonFormField<String>(
                   initialValue: fromAccId,
                   decoration: const InputDecoration(labelText: 'ચુકવણી થનાર બેંક ખાતું'),
@@ -5495,7 +8370,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                     if (v != null) fromAccId = v;
                   },
                 ),
-                const SizedBox(height: 10),
+                const SizedBox(height: 8),
                 RadioListTile<String>(
                   dense: true,
                   title: const Text('ઓટો-પે (તારીખે આપોઆપ ખાતામાંથી કપાત)', style: TextStyle(fontSize: 12)),
@@ -5505,7 +8380,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                 ),
                 RadioListTile<String>(
                   dense: true,
-                  title: const Text('મેન્યુઅલ (ડેશબોર્ડ પર રીમાઇન્ડર આપે)', style: TextStyle(fontSize: 12)),
+                  title: const Text('મેન્યુઅલ (ડેશબોર્ડ અને ફ્લેશ મેસેજ રીમાઇન્ડર)', style: TextStyle(fontSize: 12)),
                   value: 'manual',
                   groupValue: mode,
                   onChanged: (val) => setDlgState(() => mode = val!),
@@ -5518,7 +8393,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             ElevatedButton(
               onPressed: () {
                 final id = existingItem != null ? existingItem['id'] : "auto_${DateTime.now().millisecondsSinceEpoch}";
-                autoPayBox.put(id, {
+                final savedMap = {
                   'id': id,
                   'type': type,
                   'toTarget': targetCtrl.text.trim(),
@@ -5529,13 +8404,148 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   'autoGenerateFromDaily': autoGenFromDaily,
                   'fromAccountId': fromAccId,
                   'executionMode': mode,
+                  'reminderHour': selectedReminderTime.hour,
+                  'reminderMinute': selectedReminderTime.minute,
+                  'ringtoneName': selectedRingtone,
+                  'enableFlashMessage': enableFlashMessage,
+                  'specificReminderDate': specificReminderDate?.toIso8601String(),
                   'isActive': true,
-                  'lastProcessed': '',
-                });
+                  'lastProcessed': existingItem != null ? (existingItem['lastProcessed'] ?? '') : '',
+                };
+                autoPayBox.put(id, savedMap);
+                // Native Android Alarm schedule call (if configured in MainActivity)
+                try {
+                  _nativeChannel.invokeMethod('scheduleFlashReminder', savedMap);
+                } catch (_) {}
                 _processAutoPayAndSIP();
                 if (onSaved != null) onSaved();
                 Navigator.pop(ctx);
                 setState(() {});
+              },
+              child: const Text('સેવ કરો'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // =========================================================
+  // કેટેગરી મેનેજર (સુધારી શકાય + પ્રકાર બદલી શકાય: ખર્ચ, આવક, રોકાણ)
+  // =========================================================
+  String _categoryEffectLabel(String effect) {
+    switch (effect) {
+      case 'incomeCredit':
+        return 'આવક (Income)';
+      case 'assetIncrease':
+        return 'રોકાણ (Investment)';
+      case 'loanRepay':
+        return 'લોન / બિલ ખર્ચ';
+      default:
+        return 'ખર્ચ (Expense)';
+    }
+  }
+
+  void _openAddOrEditCategoryDialog({Map<dynamic, dynamic>? existingCat, required VoidCallback onSaved}) {
+    final nameCtrl = TextEditingController(text: existingCat != null ? existingCat['name'] : '');
+    String effect = existingCat != null ? (existingCat['effect'] ?? 'expenseDebit') : 'expenseDebit';
+    if (effect == 'loanRepay') effect = 'expenseDebit';
+    int selectedColorVal = existingCat != null
+        ? ((existingCat['color'] as num?)?.toInt() ?? Colors.teal.toARGB32())
+        : Colors.teal.toARGB32();
+
+    final List<Color> catColors = [
+      Colors.redAccent,
+      Colors.green,
+      Colors.blue,
+      Colors.amber.shade800,
+      Colors.orange,
+      Colors.purple,
+      Colors.teal,
+      Colors.indigo,
+      Colors.pink,
+      Colors.brown,
+    ];
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) => AlertDialog(
+          title: Text(existingCat == null ? 'નવી કેટેગરી ઉમેરો' : 'કેટેગરી સુધારો'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: nameCtrl,
+                  decoration: const InputDecoration(labelText: 'કેટેગરીનું નામ'),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: effect,
+                  decoration: const InputDecoration(labelText: 'કેટેગરીનો પ્રકાર (ખર્ચ / આવક / રોકાણ)'),
+                  items: const [
+                    DropdownMenuItem(value: 'expenseDebit', child: Text('ખર્ચ (Expense)')),
+                    DropdownMenuItem(value: 'incomeCredit', child: Text('આવક (Income)')),
+                    DropdownMenuItem(value: 'assetIncrease', child: Text('રોકાણ (Investment)')),
+                  ],
+                  onChanged: (v) {
+                    if (v != null) setDlgState(() => effect = v);
+                  },
+                ),
+                const SizedBox(height: 12),
+                const Text('રંગ પસંદ કરો:', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: catColors.map((c) {
+                    final isSel = c.toARGB32() == selectedColorVal;
+                    return InkWell(
+                      onTap: () => setDlgState(() => selectedColorVal = c.toARGB32()),
+                      child: CircleAvatar(
+                        radius: 15,
+                        backgroundColor: c,
+                        child: isSel ? const Icon(Icons.check, size: 16, color: Colors.white) : null,
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ')),
+            ElevatedButton(
+              onPressed: () {
+                final name = nameCtrl.text.trim();
+                if (name.isEmpty) return;
+                final id = existingCat != null ? existingCat['id'].toString() : "cat_${DateTime.now().millisecondsSinceEpoch}";
+
+                categoriesBox.put(id, {
+                  'id': id,
+                  'name': name,
+                  'effect': effect,
+                  'color': selectedColorVal,
+                });
+
+                // જો કેટેગરી સુધારી હોય તો તે કેટેગરીના જૂના વ્યવહારોમાં પણ નામ અને પ્રકાર અપડેટ કરો
+                if (existingCat != null) {
+                  for (final rawTx in transactionsBox.values.toList()) {
+                    final tx = Map<dynamic, dynamic>.from(rawTx);
+                    if (tx['categoryId'].toString() == id) {
+                      tx['categoryName'] = name;
+                      tx['categoryEffect'] = effect;
+                      tx['categoryColor'] = selectedColorVal;
+                      transactionsBox.put(tx['id'], tx);
+                    }
+                  }
+                }
+
+                onSaved();
+                setState(() {});
+                Navigator.pop(ctx);
               },
               child: const Text('સેવ કરો'),
             ),
@@ -5550,31 +8560,278 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (context, setDlgState) => AlertDialog(
-          title: const Text('કેટેગરી મેનેજર'),
+          title: const Text('કેટેગરી મેનેજર (ખર્ચ / આવક / રોકાણ)'),
           content: SizedBox(
             width: double.maxFinite,
-            height: 360,
+            height: 380,
             child: ListView.builder(
               itemCount: categories.length,
               itemBuilder: (context, i) {
                 final cat = categories[i];
-                return ListTile(
-                  dense: true,
-                  title: Text(cat['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.delete, size: 18, color: Colors.red),
-                    onPressed: () {
-                      categoriesBox.delete(cat['id']);
-                      setDlgState(() {});
-                      setState(() {});
-                    },
+                final Color c = Color((cat['color'] as num?)?.toInt() ?? Colors.teal.toARGB32());
+                return Card(
+                  margin: const EdgeInsets.symmetric(vertical: 3),
+                  child: ListTile(
+                    dense: true,
+                    leading: CircleAvatar(radius: 12, backgroundColor: c),
+                    title: Text(cat['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text('પ્રકાર: ${_categoryEffectLabel(cat['effect'].toString())}'),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.edit, size: 18, color: Colors.teal),
+                          onPressed: () {
+                            _openAddOrEditCategoryDialog(
+                              existingCat: cat,
+                              onSaved: () => setDlgState(() {}),
+                            );
+                          },
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete, size: 18, color: Colors.red),
+                          onPressed: () {
+                            if (categories.length <= 1) return;
+                            categoriesBox.delete(cat['id']);
+                            setDlgState(() {});
+                            setState(() {});
+                          },
+                        ),
+                      ],
+                    ),
                   ),
                 );
               },
             ),
           ),
           actions: [
+            ElevatedButton.icon(
+              icon: const Icon(Icons.add, size: 16),
+              label: const Text('નવી કેટેગરી ઉમેરો'),
+              onPressed: () {
+                _openAddOrEditCategoryDialog(onSaved: () => setDlgState(() {}));
+              },
+            ),
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('પૂર્ણ')),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // =========================================================
+  // બેંક અને ક્રેડિટ કાર્ડ ખાતા મેનેજર:
+  // - બેંક એકાઉન્ટ: બેંકનું નામ, બ્રાન્ચનું નામ, પ્રકાર (Saving, Salary કે કસ્ટમ), વ્યાજ દર (%), પ્રારંભિક કિંમત
+  // - ક્રેડિટ કાર્ડ: આપનાર બેંક/NBFC નું નામ, કાર્ડનો પ્રકાર, મહત્તમ લિમિટ, વોર્નિંગ લિમિટ, પ્રારંભિક બાકી રકમ
+  // =========================================================
+  void _openAddOrEditAccountDialog({Map<dynamic, dynamic>? existingAcc, required VoidCallback onSaved}) {
+    final bool isCcInit = existingAcc != null ? _isCreditCardAccount(existingAcc) : false;
+    String accountCategory = existingAcc != null
+        ? (existingAcc['accountCategory'] ?? (isCcInit ? 'CreditCard' : 'Bank')).toString()
+        : 'Bank';
+
+    final displayNameCtrl = TextEditingController(text: existingAcc != null ? (existingAcc['name'] ?? '') : '');
+    final bankNameCtrl = TextEditingController(text: existingAcc != null ? (existingAcc['bankName'] ?? '') : '');
+    final branchNameCtrl = TextEditingController(text: existingAcc != null ? (existingAcc['branchName'] ?? '') : '');
+    final customSubTypeCtrl = TextEditingController(text: existingAcc != null ? (existingAcc['accountSubType'] ?? '') : '');
+    final interestRateCtrl = TextEditingController(text: existingAcc != null ? ((existingAcc['interestRate'] ?? 3.5).toString()) : '3.5');
+    final openingBalCtrl = TextEditingController(text: existingAcc != null ? ((existingAcc['openingBalance'] ?? 0.0).toString()) : '0');
+
+    // Credit Card specific controllers
+    final issuerNameCtrl = TextEditingController(text: existingAcc != null ? (existingAcc['issuerName'] ?? '') : '');
+    final cardTypeCtrl = TextEditingController(text: existingAcc != null ? (existingAcc['cardType'] ?? 'Visa / RuPay Platinum') : 'Visa / RuPay Platinum');
+    final maxLimitCtrl = TextEditingController(text: existingAcc != null ? ((existingAcc['maxLimit'] ?? 100000.0).toString()) : '100000');
+    final warnLimitCtrl = TextEditingController(text: existingAcc != null ? ((existingAcc['warningLimit'] ?? 75000.0).toString()) : '75000');
+
+    final List<String> bankTypePresets = [
+      'સેવિંગ એકાઉન્ટ (Savings Account)',
+      'સેલેરી એકાઉન્ટ (Salary Account)',
+      'કરંટ એકાઉન્ટ (Current Account)',
+      'ડીમેટ / ટ્રેડિંગ એકાઉન્ટ (Demat A/C)',
+      'રોકડ ખાતું (Cash Wallet)',
+      'અન્ય (કસ્ટમ પ્રકાર લખો)',
+    ];
+    String selectedBankPreset = bankTypePresets.first;
+    if (existingAcc != null) {
+      final savedT = (existingAcc['accountSubType'] ?? existingAcc['type'] ?? '').toString();
+      if (bankTypePresets.contains(savedT)) {
+        selectedBankPreset = savedT;
+      } else if (savedT.isNotEmpty) {
+        selectedBankPreset = 'અન્ય (કસ્ટમ પ્રકાર લખો)';
+        customSubTypeCtrl.text = savedT;
+      }
+    }
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) => AlertDialog(
+          title: Text(existingAcc == null ? 'નવું બેંક / ક્રેડિટ કાર્ડ ખાતું ઉમેરો' : 'ખાતાની વિગત સુધારો'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(value: 'Bank', icon: Icon(Icons.account_balance, size: 16), label: Text('બેંક / રોકડ ખાતું', style: TextStyle(fontSize: 11.5))),
+                    ButtonSegment(value: 'CreditCard', icon: Icon(Icons.credit_card, size: 16), label: Text('ક્રેડિટ કાર્ડ', style: TextStyle(fontSize: 11.5))),
+                  ],
+                  selected: {accountCategory == 'CreditCard' ? 'CreditCard' : 'Bank'},
+                  onSelectionChanged: (s) => setDlgState(() => accountCategory = s.first),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: displayNameCtrl,
+                  decoration: InputDecoration(
+                    labelText: accountCategory == 'CreditCard'
+                        ? 'કાર્ડનું પ્રદર્શિત નામ (દા.ત. HDFC Millennia CC)'
+                        : 'ખાતાનું પ્રદર્શિત નામ (દા.ત. SBI સેવિંગ ખાતું)',
+                  ),
+                ),
+                if (accountCategory != 'CreditCard') ...[
+                  TextField(
+                    controller: bankNameCtrl,
+                    decoration: const InputDecoration(labelText: 'બેંકનું નામ (દા.ત. State Bank of India, HDFC)'),
+                  ),
+                  TextField(
+                    controller: branchNameCtrl,
+                    decoration: const InputDecoration(labelText: 'બ્રાન્ચનું નામ (દા.ત. જામનગર મેઈન બ્રાન્ચ)'),
+                  ),
+                  const SizedBox(height: 6),
+                  DropdownButtonFormField<String>(
+                    initialValue: selectedBankPreset,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: 'ખાતાનો પ્રકાર પસંદ કરો'),
+                    items: bankTypePresets.map((t) => DropdownMenuItem(value: t, child: Text(t, style: const TextStyle(fontSize: 12)))).toList(),
+                    onChanged: (v) {
+                      if (v != null) setDlgState(() => selectedBankPreset = v);
+                    },
+                  ),
+                  if (selectedBankPreset == 'અન્ય (કસ્ટમ પ્રકાર લખો)')
+                    TextField(
+                      controller: customSubTypeCtrl,
+                      decoration: const InputDecoration(labelText: 'તમારો કસ્ટમ ખાતા પ્રકાર લખો (દા.ત. NRE, Joint, Overdraft)'),
+                    ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: interestRateCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(labelText: 'વાર્ષિક વ્યાજ દર (%)'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextField(
+                          controller: openingBalCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(labelText: 'પ્રારંભિક સિલક (₹)'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ] else ...[
+                  TextField(
+                    controller: issuerNameCtrl,
+                    decoration: const InputDecoration(labelText: 'કાર્ડ આપનાર બેંક અથવા NBFC નું નામ (દા.ત. SBI Card, Bajaj Finserv)'),
+                  ),
+                  TextField(
+                    controller: cardTypeCtrl,
+                    decoration: const InputDecoration(labelText: 'કાર્ડનો પ્રકાર (દા.ત. Visa Platinum, RuPay, MasterCard)'),
+                  ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: maxLimitCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(labelText: 'મહત્તમ લિમિટ (₹)'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextField(
+                          controller: warnLimitCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(labelText: 'વોર્નિંગ લિમિટ (₹)'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  TextField(
+                    controller: openingBalCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(labelText: 'પ્રારંભિક વપરાયેલ / બાકી રકમ (₹)'),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ')),
+            ElevatedButton(
+              onPressed: () {
+                final String name = displayNameCtrl.text.trim();
+                if (name.isEmpty) return;
+
+                final String id = existingAcc != null ? existingAcc['id'].toString() : "acc_${DateTime.now().millisecondsSinceEpoch}";
+                final double openBal = double.tryParse(openingBalCtrl.text) ?? 0.0;
+
+                if (accountCategory == 'CreditCard') {
+                  final String issuer = issuerNameCtrl.text.trim();
+                  final String cType = cardTypeCtrl.text.trim();
+                  final double maxL = double.tryParse(maxLimitCtrl.text) ?? 100000.0;
+                  final double warnL = double.tryParse(warnLimitCtrl.text) ?? (maxL * 0.8);
+
+                  accountsBox.put(id, {
+                    'id': id,
+                    'name': name,
+                    'type': 'ક્રેડિટ કાર્ડ ($cType)',
+                    'accountCategory': 'CreditCard',
+                    'issuerName': issuer,
+                    'cardType': cType,
+                    'maxLimit': maxL,
+                    'warningLimit': warnL,
+                    'openingBalance': openBal,
+                  });
+                } else {
+                  final String finalSubType = selectedBankPreset == 'અન્ય (કસ્ટમ પ્રકાર લખો)'
+                      ? (customSubTypeCtrl.text.trim().isEmpty ? 'અન્ય બેંક ખાતું' : customSubTypeCtrl.text.trim())
+                      : selectedBankPreset;
+                  final double intRate = double.tryParse(interestRateCtrl.text) ?? 3.5;
+
+                  accountsBox.put(id, {
+                    'id': id,
+                    'name': name,
+                    'type': finalSubType,
+                    'accountCategory': finalSubType.contains('રોકડ') ? 'Cash' : 'Bank',
+                    'bankName': bankNameCtrl.text.trim(),
+                    'branchName': branchNameCtrl.text.trim(),
+                    'accountSubType': finalSubType,
+                    'interestRate': intRate,
+                    'openingBalance': openBal,
+                  });
+                }
+
+                // જૂના વ્યવહારોમાં ખાતાનું નામ અપડેટ કરો
+                if (existingAcc != null) {
+                  for (final rawTx in transactionsBox.values.toList()) {
+                    final tx = Map<dynamic, dynamic>.from(rawTx);
+                    if (tx['accountId'].toString() == id) {
+                      tx['accountName'] = name;
+                      transactionsBox.put(tx['id'], tx);
+                    }
+                  }
+                }
+
+                onSaved();
+                setState(() {});
+                Navigator.pop(ctx);
+              },
+              child: const Text('સેવ કરો'),
+            ),
           ],
         ),
       ),
@@ -5586,26 +8843,78 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (context, setDlgState) => AlertDialog(
-          title: const Text('ખાતાઓ (Accounts) મેનેજ કરો'),
+          title: const Text('બેંક અને ક્રેડિટ કાર્ડ ખાતા મેનેજર'),
           content: SizedBox(
             width: double.maxFinite,
-            height: 360,
+            height: 410,
             child: ListView.builder(
               itemCount: accounts.length,
               itemBuilder: (context, i) {
                 final a = accounts[i];
-                final currentBal = getAccountCurrentBalance(a['id'].toString());
+                final String accId = a['id'].toString();
+                final bool isCc = _isCreditCardAccount(a);
+                final double currentBal = getAccountCurrentBalance(accId);
+                final double ccUsed = isCc ? getCreditCardUsedAmount(accId) : 0.0;
+                final double maxLim = (a['maxLimit'] as num?)?.toDouble() ?? 0.0;
+                final double warnLim = (a['warningLimit'] as num?)?.toDouble() ?? 0.0;
+                final bool isOverWarn = isCc && warnLim > 0 && ccUsed >= warnLim;
+
                 return Card(
+                  margin: const EdgeInsets.symmetric(vertical: 4),
                   child: ListTile(
                     dense: true,
-                    title: Text(a['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text('${a['type']}\nહાલની સિલક: ₹${currentBal.toStringAsFixed(0)}'),
+                    leading: Icon(
+                      isCc ? Icons.credit_card : Icons.account_balance,
+                      color: isOverWarn ? Colors.red : (isCc ? Colors.deepOrange : Colors.teal),
+                    ),
+                    title: Text(a['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                    subtitle: Text(
+                      isCc
+                          ? 'આપનાર: ${a['issuerName'] ?? '-'} • પ્રકાર: ${a['cardType'] ?? '-'}\n'
+                            'વપરાશ: ₹${ccUsed.toStringAsFixed(0)} / મહત્તમ લિમિટ: ₹${maxLim.toStringAsFixed(0)} (વોર્નિંગ: ₹${warnLim.toStringAsFixed(0)})'
+                            '${isOverWarn ? '\n⚠️ વોર્નિંગ લિમિટ કરતાં ખર્ચ વધારે છે!' : ''}'
+                          : '${a['bankName'] != null && a['bankName'].toString().isNotEmpty ? '${a['bankName']} (${a['branchName'] ?? ''}) • ' : ''}${a['type']}\n'
+                            'પ્રારંભિક: ₹${((a['openingBalance'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(0)} | હાલની સિલક: ₹${currentBal.toStringAsFixed(0)} | વ્યાજ: ${((a['interestRate'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(1)}%',
+                      style: TextStyle(fontSize: 11, color: isOverWarn ? Colors.redAccent : null),
+                    ),
+                    isThreeLine: true,
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.edit, size: 18, color: Colors.teal),
+                          tooltip: 'સુધારો',
+                          onPressed: () {
+                            _openAddOrEditAccountDialog(
+                              existingAcc: a,
+                              onSaved: () => setDlgState(() {}),
+                            );
+                          },
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete, size: 18, color: Colors.red),
+                          onPressed: () {
+                            if (accounts.length <= 1) return;
+                            accountsBox.delete(a['id']);
+                            setDlgState(() {});
+                            setState(() {});
+                          },
+                        ),
+                      ],
+                    ),
                   ),
                 );
               },
             ),
           ),
           actions: [
+            ElevatedButton.icon(
+              icon: const Icon(Icons.add, size: 16),
+              label: const Text('નવું ખાતું / કાર્ડ ઉમેરો'),
+              onPressed: () {
+                _openAddOrEditAccountDialog(onSaved: () => setDlgState(() {}));
+              },
+            ),
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('પૂર્ણ')),
           ],
         ),
@@ -5661,14 +8970,53 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   Widget _buildTransactionsTab() {
     final pendingReminders = pendingManualReminders;
 
+    // ક્રેડિટ કાર્ડમાં જો કોઈ કાર્ડ વોર્નિંગ લિમિટ કરતાં વધી ગયું હોય તેની યાદી
+    final List<DataMap> overLimitCards = accounts.where((a) {
+      if (!_isCreditCardAccount(a)) return false;
+      final double warnL = (a['warningLimit'] as num?)?.toDouble() ?? 0.0;
+      final double maxL = (a['maxLimit'] as num?)?.toDouble() ?? 0.0;
+      final double used = getCreditCardUsedAmount(a['id'].toString());
+      return (warnL > 0 && used >= warnL) || (maxL > 0 && used >= maxL);
+    }).toList();
+
     return Column(
       children: [
+        if (overLimitCards.isNotEmpty)
+          Container(
+            margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: isDark ? Colors.red.shade900.withOpacity(0.45) : Colors.red.shade50,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.redAccent),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: overLimitCards.map((cc) {
+                final used = getCreditCardUsedAmount(cc['id'].toString());
+                final warnL = (cc['warningLimit'] as num?)?.toDouble() ?? 0.0;
+                final maxL = (cc['maxLimit'] as num?)?.toDouble() ?? 0.0;
+                return Row(
+                  children: [
+                    const Icon(Icons.warning_amber_rounded, color: Colors.redAccent, size: 18),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        '⚠️ ક્રેડિટ કાર્ડ વોર્નિંગ (${cc['name']}): ખર્ચ ₹${used.toStringAsFixed(0)} થયો છે (વોર્નિંગ લિમિટ: ₹${warnL.toStringAsFixed(0)} | મહત્તમ: ₹${maxL.toStringAsFixed(0)})',
+                        style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: isDark ? Colors.white : Colors.red.shade900),
+                      ),
+                    ),
+                  ],
+                );
+              }).toList(),
+            ),
+          ),
         if (pendingReminders.isNotEmpty)
           Container(
             margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
-              color: Colors.amber.shade100,
+              color: isDark ? Colors.amber.shade900.withOpacity(0.35) : Colors.amber.shade100,
               borderRadius: BorderRadius.circular(8),
               border: Border.all(color: Colors.amber.shade700),
             ),
@@ -5677,9 +9025,12 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
               children: [
                 Row(
                   children: [
-                    Icon(Icons.notifications_active, color: Colors.amber.shade900, size: 18),
+                    Icon(Icons.notifications_active, color: isDark ? Colors.amberAccent : Colors.amber.shade900, size: 18),
                     const SizedBox(width: 8),
-                    Text("બાકી હપ્તા / બિલ રીમાઇન્ડર (${pendingReminders.length})", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.amber.shade900)),
+                    Text(
+                      "બાકી હપ્તા / બિલ રીમાઇન્ડર (${pendingReminders.length})",
+                      style: TextStyle(fontWeight: FontWeight.bold, color: isDark ? Colors.amberAccent : Colors.amber.shade900),
+                    ),
                   ],
                 ),
                 const SizedBox(height: 6),
@@ -5691,7 +9042,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                       Expanded(
                         child: Text(
                           "${rem['type']}: ${rem['toTarget']} - ₹${(rem['amount'] as num).toStringAsFixed(0)} (${rem['day']} તારીખ)",
-                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.black87),
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: primaryTextColor),
                         ),
                       ),
                       ElevatedButton(
@@ -5752,7 +9103,13 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                           children: [
                             Text('₹${(tx['amount'] as num).toStringAsFixed(0)}', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold, color: amountColor)),
                             IconButton(icon: const Icon(Icons.edit, size: 16), onPressed: () => _openTransactionDialog(existingTx: tx)),
-                            IconButton(icon: const Icon(Icons.delete, size: 16, color: Colors.grey), onPressed: () { transactionsBox.delete(tx['id']); setState(() {}); }),
+                            IconButton(
+                              icon: const Icon(Icons.delete, size: 16, color: Colors.grey),
+                              onPressed: () {
+                                transactionsBox.delete(tx['id']);
+                                setState(() {});
+                              },
+                            ),
                           ],
                         ),
                       ),
@@ -5767,16 +9124,16 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   Widget _buildMiniSummaryCard(String title, double amount, Color color) {
     return Expanded(
       child: Card(
-        color: color.withOpacity(0.12),
+        color: color.withOpacity(isDark ? 0.22 : 0.12),
         elevation: 0,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8), side: BorderSide(color: color.withOpacity(0.3))),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8), side: BorderSide(color: color.withOpacity(0.4))),
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 4.0),
           child: Column(
             children: [
-              Text(title, style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.bold)),
+              Text(title, style: TextStyle(fontSize: 11, color: isDark ? Colors.white : color, fontWeight: FontWeight.bold)),
               const SizedBox(height: 2),
-              FittedBox(fit: BoxFit.scaleDown, child: Text('₹${amount.toStringAsFixed(0)}', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: color))),
+              FittedBox(fit: BoxFit.scaleDown, child: Text('₹${amount.toStringAsFixed(0)}', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: isDark ? Colors.white : color))),
             ],
           ),
         ),
@@ -5790,10 +9147,8 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    // (૨) સુધારેલી બેકગ્રાઉન્ડ અનલૉક સ્ક્રીન (માસ્ટર પાસવર્ડ + ફિંગરપ્રિન્ટ બંને વિકલ્પ)
     if (_isAppLocked) {
       return Scaffold(
-        backgroundColor: Colors.grey.shade100,
         body: Center(
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(24.0),
@@ -5807,9 +9162,9 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   children: [
                     const Icon(Icons.lock_person, size: 68, color: Colors.teal),
                     const SizedBox(height: 12),
-                    const Text('નાણાકીય વૉલ્ટ સુરક્ષિત રીતે લૉક છે', style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold, color: Colors.black87)),
+                    Text('નાણાકીય વૉલ્ટ સુરક્ષિત રીતે લૉક છે', style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold, color: primaryTextColor)),
                     const SizedBox(height: 4),
-                    Text(widget.userEmail, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                    Text(widget.userEmail, style: TextStyle(fontSize: 12, color: secondaryTextColor)),
                     const SizedBox(height: 18),
                     TextField(
                       controller: _unlockPasswordCtrl,
@@ -5866,16 +9221,27 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     final totalExpense = _calculateTotal('expenseDebit') + _calculateTotal('loanRepay');
     final assetGain = _calculateTotal('assetIncrease');
     final netSavings = totalIncome - (totalExpense + assetGain);
-    final List<int> fyYears = List.generate(111, (index) => 1990 + index);
+    // 1800 થી 2100 સુધીના તમામ નાણાકીય વર્ષો (FY)
+    final List<int> fyYears = List.generate(301, (index) => 1800 + index);
 
     return Scaffold(
       appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(appTitle, style: const TextStyle(fontSize: 16.5, fontWeight: FontWeight.bold)),
-            Text(widget.userEmail, style: const TextStyle(fontSize: 10, color: Colors.grey)),
-          ],
+        title: InkWell(
+          onTap: _openChangeScreenTitleDialog,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Flexible(child: Text(appTitle, style: const TextStyle(fontSize: 16.5, fontWeight: FontWeight.bold))),
+                  const SizedBox(width: 4),
+                  const Icon(Icons.edit, size: 13, color: Colors.grey),
+                ],
+              ),
+              Text(widget.userEmail, style: TextStyle(fontSize: 10, color: secondaryTextColor)),
+            ],
+          ),
         ),
         actions: [
           IconButton(
@@ -5884,10 +9250,10 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             onPressed: _openBackupAndRestoreDialog,
           ),
           IconButton(
-            icon: CircleAvatar(
+            icon: const CircleAvatar(
               radius: 14,
               backgroundColor: Colors.teal,
-              child: const Icon(Icons.currency_rupee, color: Colors.white, size: 17),
+              child: Icon(Icons.currency_rupee, color: Colors.white, size: 17),
             ),
             tooltip: 'સંપૂર્ણ રોકાણ, બચત, રિસ્ક અને સ્ટ્રેટેજી વિશ્લેષણ',
             onPressed: _openAnnualTaxAndExpenseDialog,
@@ -5919,68 +9285,96 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           NavigationDestination(icon: Icon(Icons.trending_up), label: 'ઇન્વેસ્ટમેન્ટ'),
         ],
       ),
-      body: Column(
-        children: [
-          Card(
-            margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            elevation: 1,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              child: Row(
-                children: [
-                  const Icon(Icons.calendar_month, size: 18, color: Colors.teal),
-                  const SizedBox(width: 6),
-                  const Text('FY:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                  const SizedBox(width: 6),
-                  DropdownButton<int>(
-                    value: selectedFinancialYearStart,
-                    underline: const SizedBox(),
-                    items: fyYears.map((y) => DropdownMenuItem(value: y, child: Text('$y-${(y + 1).toString().substring(2)}'))).toList(),
-                    onChanged: (val) {
-                      if (val != null) setState(() => selectedFinancialYearStart = val);
-                    },
+      body: ValueListenableBuilder<String?>(
+        valueListenable: appBackgroundImage,
+        builder: (context, bgPath, _) {
+          final bool hasValidBg = bgPath != null && bgPath.isNotEmpty && File(bgPath).existsSync();
+          return Stack(
+            children: [
+              if (hasValidBg)
+                Positioned.fill(
+                  child: Image.file(
+                    File(bgPath),
+                    fit: BoxFit.cover,
                   ),
-                  const Spacer(),
-                  DropdownButton<TimeFilter>(
-                    value: selectedFilter,
-                    underline: const SizedBox(),
-                    items: const [
-                      DropdownMenuItem(value: TimeFilter.daily, child: Text('દૈનિક')),
-                      DropdownMenuItem(value: TimeFilter.monthly, child: Text('માસિક')),
-                      DropdownMenuItem(value: TimeFilter.quarterly, child: Text('ત્રિમાસિક')),
-                      DropdownMenuItem(value: TimeFilter.halfYearly, child: Text('છ માસિક')),
-                      DropdownMenuItem(value: TimeFilter.yearly, child: Text('વાર્ષિક')),
-                      DropdownMenuItem(value: TimeFilter.allFY, child: Text('આખું FY')),
-                      DropdownMenuItem(value: TimeFilter.custom, child: Text('ચોક્કસ તારીખ')),
-                    ],
-                    onChanged: (val) {
-                      if (val != null) setState(() => selectedFilter = val);
-                    },
+                ),
+              if (hasValidBg)
+                Positioned.fill(
+                  child: Container(
+                    color: isDark ? Colors.black.withOpacity(0.68) : Colors.white.withOpacity(0.72),
+                  ),
+                ),
+              Column(
+                children: [
+                  Card(
+                    margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    elevation: 1,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.calendar_month, size: 18, color: Colors.teal),
+                          const SizedBox(width: 6),
+                          const Text('FY:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                          const SizedBox(width: 6),
+                          DropdownButton<int>(
+                            value: selectedFinancialYearStart.clamp(1800, 2100),
+                            underline: const SizedBox(),
+                            items: fyYears
+                                .map((y) => DropdownMenuItem(
+                                      value: y,
+                                      child: Text('$y-${(y + 1).toString().substring(2)}'),
+                                    ))
+                                .toList(),
+                            onChanged: (val) {
+                              if (val != null) setState(() => selectedFinancialYearStart = val);
+                            },
+                          ),
+                          const Spacer(),
+                          DropdownButton<TimeFilter>(
+                            value: selectedFilter,
+                            underline: const SizedBox(),
+                            items: const [
+                              DropdownMenuItem(value: TimeFilter.daily, child: Text('દૈનિક')),
+                              DropdownMenuItem(value: TimeFilter.monthly, child: Text('માસિક')),
+                              DropdownMenuItem(value: TimeFilter.quarterly, child: Text('ત્રિમાસિક')),
+                              DropdownMenuItem(value: TimeFilter.halfYearly, child: Text('છ માસિક')),
+                              DropdownMenuItem(value: TimeFilter.yearly, child: Text('વાર્ષિક')),
+                              DropdownMenuItem(value: TimeFilter.allFY, child: Text('આખું FY')),
+                              DropdownMenuItem(value: TimeFilter.custom, child: Text('ચોક્કસ તારીખ')),
+                            ],
+                            onChanged: (val) {
+                              if (val != null) setState(() => selectedFilter = val);
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12.0),
+                    child: Row(
+                      children: [
+                        _buildMiniSummaryCard('આવક', totalIncome, Colors.green),
+                        _buildMiniSummaryCard('ખર્ચ', totalExpense, Colors.redAccent),
+                        _buildMiniSummaryCard('રોકાણ', assetGain, Colors.blue),
+                        _buildMiniSummaryCard('નેટ બચત', netSavings, Colors.teal),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Expanded(
+                    child: _selectedTabIndex == 0
+                        ? _buildTransactionsTab()
+                        : (_selectedTabIndex == 1
+                            ? _buildAnalysisTab()
+                            : (_selectedTabIndex == 2 ? _buildBudgetTab() : _buildInvestmentTab())),
                   ),
                 ],
               ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12.0),
-            child: Row(
-              children: [
-                _buildMiniSummaryCard('આવક', totalIncome, Colors.green),
-                _buildMiniSummaryCard('ખર્ચ', totalExpense, Colors.redAccent),
-                _buildMiniSummaryCard('રોકાણ', assetGain, Colors.blue),
-                _buildMiniSummaryCard('નેટ બચત', netSavings, Colors.teal),
-              ],
-            ),
-          ),
-          const SizedBox(height: 4),
-          Expanded(
-            child: _selectedTabIndex == 0
-                ? _buildTransactionsTab()
-                : (_selectedTabIndex == 1
-                    ? _buildAnalysisTab()
-                    : (_selectedTabIndex == 2 ? _buildBudgetTab() : _buildInvestmentTab())),
-          ),
-        ],
+            ],
+          );
+        },
       ),
     );
   }
