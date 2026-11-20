@@ -20,6 +20,7 @@ typedef DataMap = Map<dynamic, dynamic>;
 final ValueNotifier<Color> appSeedColor = ValueNotifier<Color>(Colors.teal);
 final ValueNotifier<String?> appBackgroundImage = ValueNotifier<String?>(null);
 final ValueNotifier<ThemeMode> appThemeMode = ValueNotifier<ThemeMode>(ThemeMode.light);
+final ValueNotifier<String> appLanguage = ValueNotifier<String>('gu'); // 'gu' = ગુજરાતી, 'en' = English
 
 enum TimeFilter { daily, monthly, quarterly, halfYearly, yearly, allFY, custom }
 enum AnalysisMetric { combined, income, expense, investment, taxableIncome }
@@ -59,6 +60,11 @@ void main() async {
     if (rawDark == true) {
       appThemeMode.value = ThemeMode.dark;
     }
+
+    final dynamic rawLang = settings.get('appLanguage', defaultValue: 'gu');
+    if (rawLang is String && (rawLang == 'gu' || rawLang == 'en')) {
+      appLanguage.value = rawLang;
+    }
   } catch (e) {
     debugPrint("Hive Init: $e");
   }
@@ -71,12 +77,15 @@ class FinanceApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<ThemeMode>(
-      valueListenable: appThemeMode,
-      builder: (context, currentMode, _) {
-        return ValueListenableBuilder<Color>(
-          valueListenable: appSeedColor,
-          builder: (context, primaryColor, _) {
+    return ValueListenableBuilder<String>(
+      valueListenable: appLanguage,
+      builder: (context, currentLang, _) {
+        return ValueListenableBuilder<ThemeMode>(
+          valueListenable: appThemeMode,
+          builder: (context, currentMode, _) {
+            return ValueListenableBuilder<Color>(
+              valueListenable: appSeedColor,
+              builder: (context, primaryColor, _) {
             final lightScheme = ColorScheme.fromSeed(
               seedColor: primaryColor,
               brightness: Brightness.light,
@@ -86,7 +95,7 @@ class FinanceApp extends StatelessWidget {
               brightness: Brightness.dark,
             );
             return MaterialApp(
-              title: 'નાણાકીય મેનેજર',
+              title: currentLang == 'en' ? 'Finance Manager' : 'નાણાકીય મેનેજર',
               debugShowCheckedModeBanner: false,
               themeMode: currentMode,
               theme: ThemeData(
@@ -152,6 +161,8 @@ class FinanceApp extends StatelessWidget {
         );
       },
     );
+      },
+    );
   }
 }
 
@@ -186,8 +197,21 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   late Box stockInvestmentsBox;
   late Box fixedIncomeBox;
   late Box capitalGainsBox;
+  late Box goalsBox;
 
   bool _isInitialized = false;
+
+  // રિંગટોન સ્ટોપ, સ્નૂઝ, સોર્ટિંગ અને વોઇસ કમાન્ડ સ્ટેટ્સ
+  bool _isRingtonePlaying = false;
+  final Map<String, Timer> _snoozeTimers = {};
+  String _txSortMode = 'date_desc'; // date_desc, date_asc, amount_desc, amount_asc
+  bool _isListeningVoice = false;
+  String _lastVoiceTranscript = '';
+  String _voiceStatusText = '';
+
+  // ભાષા હેલ્પર્સ (ગુજરાતી / English)
+  bool get isEn => appLanguage.value == 'en';
+  String _t(String gu, String en) => isEn ? en : gu;
 
   // બેકગ્રાઉન્ડ ઓટો-લોક અને પાસવર્ડ + બાયોમેટ્રિક અનલોક સ્ટેટ્સ
   bool _isAppLocked = false;
@@ -268,6 +292,11 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _reminderTimer?.cancel();
+    for (final t in _snoozeTimers.values) {
+      t.cancel();
+    }
+    _snoozeTimers.clear();
+    _stopRingtone();
     _unlockPasswordCtrl.dispose();
     super.dispose();
   }
@@ -465,6 +494,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       'stockInvestments': stockInvestmentsBox.toMap(),
       'fixedIncome': fixedIncomeBox.toMap(),
       'capitalGains': capitalGainsBox.toMap(),
+      'goals': goalsBox.toMap(),
       'settings': {
         'primaryColor': settingsBox.get('primaryColor'),
         'isDarkMode': settingsBox.get('isDarkMode'),
@@ -582,6 +612,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     await restoreBox(stockInvestmentsBox, data['stockInvestments']);
     await restoreBox(fixedIncomeBox, data['fixedIncome']);
     await restoreBox(capitalGainsBox, data['capitalGains']);
+    await restoreBox(goalsBox, data['goals']);
 
     if (data['settings'] is Map) {
       final s = data['settings'] as Map;
@@ -1182,6 +1213,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     stockInvestmentsBox = await Hive.openBox('stockInvestmentsBox_$prefix');
     fixedIncomeBox = await Hive.openBox('fixedIncomeBox_$prefix');
     capitalGainsBox = await Hive.openBox('capitalGainsBox_$prefix');
+    goalsBox = await Hive.openBox('goalsBox_$prefix');
 
     appTitle = settingsBox.get('customAppTitle', defaultValue: 'નાણાકીય હિસાબો');
     benchmarkInflationRate = (settingsBox.get('inflationRate', defaultValue: 6.0) as num).toDouble();
@@ -1382,13 +1414,154 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     });
   }
 
-  Future<void> _playSelectedRingtone(String ringtoneName) async {
+  // =========================================================
+  // (સુધારો ૫) SIP ફ્રીક્વન્સી હેલ્પર્સ (માસિક, અઠવાડિક, પંદર દિવસની, દૈનિક + કસ્ટમ)
+  // =========================================================
+  List<Map<String, dynamic>> _getSipFrequencyOptions() {
+    final List<Map<String, dynamic>> defaults = [
+      {'name': 'માસિક (Monthly)', 'days': 30},
+      {'name': 'અઠવાડિક (Weekly)', 'days': 7},
+      {'name': 'પંદર દિવસની (Fortnightly - 15 Days)', 'days': 15},
+      {'name': 'દૈનિક (Daily)', 'days': 1},
+    ];
+    final dynamic rawCustom = settingsBox.get('customSipFrequencies');
+    if (rawCustom is List) {
+      for (final item in rawCustom) {
+        if (item is Map && item['name'] != null) {
+          defaults.add({
+            'name': item['name'].toString(),
+            'days': (item['days'] as num?)?.toInt() ?? 30,
+          });
+        }
+      }
+    }
+    return defaults;
+  }
+
+  int _getIntervalDaysForFrequency(String freqName) {
+    final all = _getSipFrequencyOptions();
+    for (final f in all) {
+      if (f['name'].toString() == freqName) {
+        return (f['days'] as num?)?.toInt() ?? 30;
+      }
+    }
+    if (freqName.contains('દૈનિક') || freqName.contains('Daily')) return 1;
+    if (freqName.contains('અઠવાડિક') || freqName.contains('Weekly')) return 7;
+    if (freqName.contains('પંદર') || freqName.contains('Fortnightly')) return 15;
+    return 30;
+  }
+
+  Future<String?> _openAddCustomSipFrequencyDialog() async {
+    final nameCtrl = TextEditingController();
+    final daysCtrl = TextEditingController(text: '90');
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(_t('નવી SIP ફ્રીક્વન્સી ઉમેરો', 'Add Custom SIP Frequency')),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameCtrl,
+              decoration: InputDecoration(
+                labelText: _t('ફ્રીક્વન્સીનું નામ (દા.ત. ત્રિમાસિક / દર 10 દિવસે)', 'Frequency Name (e.g. Quarterly / Every 10 Days)'),
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: daysCtrl,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(
+                labelText: _t('દિવસોનો ગાળો (Interval Days)', 'Interval in Days'),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(_t('રદ', 'Cancel'))),
+          ElevatedButton(
+            onPressed: () {
+              final nm = nameCtrl.text.trim();
+              final d = int.tryParse(daysCtrl.text.trim()) ?? 0;
+              if (nm.isEmpty || d <= 0) return;
+              final dynamic raw = settingsBox.get('customSipFrequencies');
+              final List<Map<String, dynamic>> list = raw is List
+                  ? raw.map((e) => Map<String, dynamic>.from(e as Map)).toList()
+                  : [];
+              final formatted = '$nm ($d ${_t("દિવસ", "Days")})';
+              list.add({'name': formatted, 'days': d});
+              settingsBox.put('customSipFrequencies', list);
+              Navigator.pop(ctx, formatted);
+            },
+            child: Text(_t('ઉમેરો', 'Add')),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // =========================================================
+  // (સુધારો ૫) ઇન્વેસ્ટમેન્ટની નોંધ આપમેળે દૈનિક નોંધમાં ઉમેરવા / અપડેટ કરવા માટે
+  // =========================================================
+  void _syncInvestmentToDailyTransaction({
+    required String linkedInvestmentId,
+    required String title,
+    required double amount,
+    required DateTime date,
+    required String categoryId,
+    required String categoryName,
+    required int categoryColor,
+    required String accountId,
+    bool hasTime = false,
+  }) {
+    if (amount <= 0) return;
+    final acc = accounts.firstWhere(
+      (a) => a['id'].toString() == accountId,
+      orElse: () => accounts.isNotEmpty ? accounts.first : {'id': '', 'name': _t('બેંક ખાતું', 'Bank Account')},
+    );
+
+    // પહેલેથી લિંક થયેલ દૈનિક એન્ટ્રી હોય તો ડબલ એન્ટ્રી વગર અપડેટ કરો
+    String? existingTxId;
+    for (final entry in transactionsBox.values) {
+      final m = Map<dynamic, dynamic>.from(entry);
+      if (m['linkedInvestmentId']?.toString() == linkedInvestmentId) {
+        existingTxId = m['id']?.toString();
+        break;
+      }
+    }
+
+    final txId = existingTxId ?? "tx_inv_${DateTime.now().millisecondsSinceEpoch}_$linkedInvestmentId";
+    transactionsBox.put(txId, {
+      'id': txId,
+      'linkedInvestmentId': linkedInvestmentId,
+      'title': title,
+      'amount': amount,
+      'date': date.toIso8601String(),
+      'hasTime': hasTime,
+      'categoryId': categoryId,
+      'categoryName': categoryName,
+      'categoryEffect': 'assetIncrease',
+      'categoryColor': categoryColor,
+      'accountId': acc['id']?.toString() ?? accountId,
+      'accountName': acc['name'] ?? '',
+    });
+  }
+
+  // =========================================================
+  // (સુધારો ૧) રિંગટોન પ્લે / સ્ટોપ અને ઇન્ટરનલ મેમરી ઓડિયો ફાઇલ પિકર
+  // =========================================================
+  Future<void> _playSelectedRingtone(String ringtoneName, {String? customPath}) async {
+    await _stopRingtone();
+    _isRingtonePlaying = true;
     try {
-      await _nativeChannel.invokeMethod('playRingtone', {'ringtone': ringtoneName});
+      await _nativeChannel.invokeMethod('playRingtone', {
+        'ringtone': ringtoneName,
+        'customPath': customPath ?? '',
+      });
       return;
     } catch (_) {}
 
-    // Pure Flutter fallback ringtone & vibration pattern
+    // Pure Flutter fallback ringtone & vibration pattern (respects _isRingtonePlaying so Stop works!)
     int count = 3;
     if (ringtoneName.contains('ઇમરજન્સી') || ringtoneName.contains('Urgent')) {
       count = 5;
@@ -1396,33 +1569,275 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       count = 1;
     }
     for (int i = 0; i < count; i++) {
+      if (!_isRingtonePlaying) break;
       await SystemSound.play(SystemSoundType.alert);
       await HapticFeedback.heavyImpact();
       await Future.delayed(const Duration(milliseconds: 350));
     }
+    _isRingtonePlaying = false;
+  }
+
+  Future<void> _stopRingtone() async {
+    _isRingtonePlaying = false;
+    try {
+      await _nativeChannel.invokeMethod('stopRingtone');
+    } catch (_) {}
+  }
+
+  Future<Map<String, String>?> _pickAudioFileFromInternalMemory() async {
+    // ૧. પ્રથમ નેટિવ Android Audio File Picker (ACTION_OPEN_DOCUMENT) અજમાવો
+    try {
+      final dynamic res = await _nativeChannel.invokeMethod('pickAudioFile');
+      if (res is Map && res['path'] != null && res['path'].toString().isNotEmpty) {
+        return {
+          'path': res['path'].toString(),
+          'name': (res['name'] ?? res['path'].toString().split('/').last).toString(),
+        };
+      } else if (res is String && res.isNotEmpty) {
+        return {'path': res, 'name': res.split('/').last};
+      }
+    } catch (_) {}
+
+    // ૨. Pure Dart Fallback: ઇન્ટરનલ મેમરીના ઓડિયો ફોલ્ડર્સ સ્કેન કરી પસંદ કરવાનો વિકલ્પ
+    final List<File> foundAudioFiles = [];
+    final List<String> scanDirs = [
+      '/storage/emulated/0/Ringtones',
+      '/storage/emulated/0/Music',
+      '/storage/emulated/0/Notifications',
+      '/storage/emulated/0/Alarms',
+      '/storage/emulated/0/Download',
+      '/storage/emulated/0/Audio',
+    ];
+    const audioExts = ['.mp3', '.wav', '.m4a', '.ogg', '.aac', '.flac'];
+    for (final dirPath in scanDirs) {
+      try {
+        final d = Directory(dirPath);
+        if (await d.exists()) {
+          await for (final entity in d.list(recursive: false, followLinks: false)) {
+            if (entity is File) {
+              final lower = entity.path.toLowerCase();
+              if (audioExts.any((ext) => lower.endsWith(ext))) {
+                foundAudioFiles.add(entity);
+              }
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (!mounted) return null;
+    final manualPathCtrl = TextEditingController();
+    return showDialog<Map<String, String>>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(_t('ઇન્ટરનલ મેમરીમાંથી ઓડિયો ફાઇલ પસંદ કરો', 'Select Audio File from Internal Storage')),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 330,
+          child: Column(
+            children: [
+              Expanded(
+                child: foundAudioFiles.isEmpty
+                    ? Center(
+                        child: Text(
+                          _t(
+                            'ફોલ્ડરમાં ઓડિયો ફાઇલ ન મળી. નીચે ઓડિયો ફાઇલનો પાથ લખો અથવા Storage પરમિશન આપો.',
+                            'No audio files found in Music/Ringtones/Download. Enter file path below or grant Storage/Audio permission.',
+                          ),
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      )
+                    : ListView.builder(
+                        itemCount: foundAudioFiles.length,
+                        itemBuilder: (c, i) {
+                          final f = foundAudioFiles[i];
+                          final fname = f.path.split('/').last;
+                          return ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.audio_file, color: Colors.teal),
+                            title: Text(fname, style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold)),
+                            subtitle: Text(f.path, style: const TextStyle(fontSize: 10), maxLines: 1, overflow: TextOverflow.ellipsis),
+                            onTap: () => Navigator.pop(ctx, {'path': f.path, 'name': fname}),
+                          );
+                        },
+                      ),
+              ),
+              const Divider(),
+              TextField(
+                controller: manualPathCtrl,
+                decoration: InputDecoration(
+                  isDense: true,
+                  labelText: _t('અથવા ઓડિયો ફાઇલ પાથ લખો (.mp3 / .wav)', 'Or enter audio file path (.mp3 / .wav)'),
+                  hintText: '/storage/emulated/0/Music/tone.mp3',
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(_t('રદ', 'Cancel'))),
+          ElevatedButton(
+            onPressed: () {
+              final p = manualPathCtrl.text.trim();
+              if (p.isNotEmpty) {
+                Navigator.pop(ctx, {'path': p, 'name': p.split('/').last});
+              }
+            },
+            child: Text(_t('પસંદ કરો', 'Select')),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // રિમાઇન્ડર માટે વર્તમાન સાઇકલ કી (માસિક / અઠવાડિક / પંદર દિવસ / દૈનિક / કસ્ટમ)
+  String _getReminderCycleKey(Map<dynamic, dynamic> item, DateTime now) {
+    final String freq = (item['sipFrequency'] ?? 'માસિક (Monthly)').toString();
+    final int intervalDays = (item['sipIntervalDays'] as num?)?.toInt() ?? _getIntervalDaysForFrequency(freq);
+    if (intervalDays == 1) {
+      return "${now.year}-${now.month}-${now.day}";
+    } else if (intervalDays == 7) {
+      final weekNum = ((now.difference(DateTime(now.year, 1, 1)).inDays) / 7).floor();
+      return "${now.year}-W$weekNum";
+    } else if (intervalDays == 15) {
+      final half = now.day <= 15 ? 1 : 2;
+      return "${now.year}-${now.month}-H$half";
+    } else if (intervalDays != 30) {
+      final bucket = (now.difference(DateTime(2020, 1, 1)).inDays / intervalDays).floor();
+      return "C$intervalDays-$bucket";
+    }
+    return "${now.year}-${now.month}";
+  }
+
+  // તપાસો કે આ રિમાઇન્ડરની એન્ટ્રી વર્તમાન સાઇકલમાં એપમાં પહેલેથી જ થઈ ગઈ છે કે નહીં (ડબલ એન્ટ્રી રોકવા અને બિનજરૂરી રિંગટોન અટકાવવા)
+  bool _hasExistingEntryForReminder(Map<dynamic, dynamic> item, {DateTime? referenceDate}) {
+    final now = referenceDate ?? DateTime.now();
+    final String remId = (item['id'] ?? '').toString();
+    final String target = (item['toTarget'] ?? '').toString().trim().toLowerCase();
+    final double amt = (item['amount'] as num?)?.toDouble() ?? 0.0;
+    final String cycleKey = _getReminderCycleKey(item, now);
+    final int intervalDays = (item['sipIntervalDays'] as num?)?.toInt() ??
+        _getIntervalDaysForFrequency((item['sipFrequency'] ?? 'માસિક (Monthly)').toString());
+
+    final allTx = transactionsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
+    for (final tx in allTx) {
+      final txDate = DateTime.tryParse((tx['date'] ?? '').toString());
+      if (txDate == null) continue;
+
+      // ૧. સીધો reminderId + cycleKey મેચ
+      if (tx['reminderId']?.toString() == remId && tx['reminderCycleKey']?.toString() == cycleKey) {
+        return true;
+      }
+
+      // ૨. સમયગાળાની અંદર સમાન નામ/લક્ષ્ય અને રકમની એન્ટ્રી પહેલેથી નોંધાયેલ હોય તો
+      bool withinCycle = false;
+      if (intervalDays == 1) {
+        withinCycle = txDate.year == now.year && txDate.month == now.month && txDate.day == now.day;
+      } else if (intervalDays == 30) {
+        withinCycle = txDate.year == now.year && txDate.month == now.month;
+      } else {
+        withinCycle = now.difference(txDate).inDays.abs() < intervalDays;
+      }
+
+      if (withinCycle) {
+        final txAmt = (tx['amount'] as num?)?.toDouble() ?? 0.0;
+        final txTitle = (tx['title'] ?? '').toString().trim().toLowerCase();
+        if (target.isNotEmpty && txTitle.contains(target) && (amt <= 0 || (txAmt - amt).abs() <= 1.0)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  void _scheduleSnoozeForReminder(Map<dynamic, dynamic> item, Duration delay) {
+    final String id = item['id'].toString();
+    final DateTime snoozeTarget = DateTime.now().add(delay);
+    item['snoozeUntil'] = snoozeTarget.toIso8601String();
+    autoPayBox.put(id, item);
+
+    _snoozeTimers[id]?.cancel();
+    _snoozeTimers[id] = Timer(delay, () {
+      if (!mounted) return;
+      final latestRaw = autoPayBox.get(id);
+      if (latestRaw == null) return;
+      final latest = Map<dynamic, dynamic>.from(latestRaw);
+      final currentCycleKey = _getReminderCycleKey(latest, DateTime.now());
+      if (latest['lastProcessed'] == currentCycleKey) return;
+      if (_hasExistingEntryForReminder(latest)) {
+        latest['lastProcessed'] = currentCycleKey;
+        latest['snoozeUntil'] = null;
+        autoPayBox.put(id, latest);
+        return;
+      }
+      _shownFlashIdsThisSession.remove(id);
+      _showFlashReminderPopup(latest);
+    });
+
+    try {
+      _nativeChannel.invokeMethod('scheduleFlashReminder', {
+        ...item,
+        'snoozeEpochMs': snoozeTarget.millisecondsSinceEpoch,
+      });
+    } catch (_) {}
   }
 
   void _checkAndTriggerFlashReminders() {
     if (!mounted || _isAppLocked || _isFlashPopupOpen) return;
     final now = DateTime.now();
-    final currentMonthKey = "${now.year}-${now.month}";
     final allAuto = autoPayBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
 
     for (final item in allAuto) {
       if (item['isActive'] != true) continue;
-      if (item['lastProcessed'] == currentMonthKey) continue;
-
       final String id = item['id'].toString();
-      if (_shownFlashIdsThisSession.contains(id)) continue;
+      final String currentCycleKey = _getReminderCycleKey(item, now);
+      if (item['lastProcessed'] == currentCycleKey) continue;
 
+      // જો રિમાઇન્ડર પહેલા જ એપમાં આ વ્યવહારની એન્ટ્રી થઈ ગઈ હોય, તો રિંગટોન બિલકુલ ન વાગવી જોઈએ!
+      if (_hasExistingEntryForReminder(item, referenceDate: now)) {
+        item['lastProcessed'] = currentCycleKey;
+        item['snoozeUntil'] = null;
+        autoPayBox.put(id, item);
+        continue;
+      }
+
+      // સ્નૂઝ સમય પૂરો થયો હોય તો ફરી રિંગ વગાડો
+      if (item['snoozeUntil'] != null) {
+        final snoozeDt = DateTime.tryParse(item['snoozeUntil'].toString());
+        if (snoozeDt != null) {
+          if (!now.isBefore(snoozeDt)) {
+            item['snoozeUntil'] = null;
+            autoPayBox.put(id, item);
+            _showFlashReminderPopup(item);
+            break;
+          } else {
+            continue;
+          }
+        }
+      }
+
+      if (_shownFlashIdsThisSession.contains(id)) continue;
       final bool enableFlash = item['enableFlashMessage'] ?? true;
       if (!enableFlash) continue;
 
       final int dueDay = (item['day'] as num?)?.toInt() ?? 1;
       final int remHour = (item['reminderHour'] as num?)?.toInt() ?? 9;
       final int remMin = (item['reminderMinute'] as num?)?.toInt() ?? 0;
+      final int intervalDays = (item['sipIntervalDays'] as num?)?.toInt() ??
+          _getIntervalDaysForFrequency((item['sipFrequency'] ?? 'માસિક (Monthly)').toString());
 
-      bool isDateMatch = (now.day == dueDay);
+      bool isDateMatch = false;
+      if (intervalDays == 1) {
+        isDateMatch = true;
+      } else if (intervalDays == 7) {
+        isDateMatch = (now.weekday == (dueDay.clamp(1, 7)));
+      } else if (intervalDays == 15) {
+        isDateMatch = (now.day == dueDay || now.day == ((dueDay + 15) > 28 ? (dueDay - 15).abs().clamp(1, 28) : dueDay + 15));
+      } else {
+        isDateMatch = (now.day == dueDay);
+      }
+
       if (item['specificReminderDate'] != null) {
         final sp = DateTime.tryParse(item['specificReminderDate'].toString());
         if (sp != null && sp.year == now.year && sp.month == now.month && sp.day == now.day) {
@@ -1445,95 +1860,218 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     if (!mounted) return;
     _isFlashPopupOpen = true;
     final String ringtone = (item['ringtoneName'] ?? 'ડિફોલ્ટ અલાર્મ ટોન (Default Alarm)').toString();
-    _playSelectedRingtone(ringtone);
+    final String customPath = (item['customRingtonePath'] ?? '').toString();
+    _playSelectedRingtone(ringtone, customPath: customPath);
 
     final int h = (item['reminderHour'] as num?)?.toInt() ?? 9;
     final int m = (item['reminderMinute'] as num?)?.toInt() ?? 0;
     final timeFormatted = TimeOfDay(hour: h, minute: m).format(context);
+    final customSnoozeCtrl = TextEditingController(text: '15');
+    String snoozeUnit = 'min'; // min or hour
+    bool ringMuted = false;
 
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-          side: const BorderSide(color: Colors.amber, width: 2.5),
-        ),
-        titlePadding: EdgeInsets.zero,
-        title: Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [Colors.teal.shade800, Colors.amber.shade800],
-            ),
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) => AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+            side: const BorderSide(color: Colors.amber, width: 2.5),
           ),
-          child: Row(
-            children: [
-              const Icon(Icons.flash_on, color: Colors.yellowAccent, size: 28),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      '⚡ મોબાઇલ ફ્લેશ મેસેજ રીમાઇન્ડર!',
-                      style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+          titlePadding: EdgeInsets.zero,
+          title: Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [Colors.teal.shade800, Colors.amber.shade800],
+              ),
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.flash_on, color: Colors.yellowAccent, size: 28),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _t('⚡ મોબાઇલ ફ્લેશ મેસેજ રીમાઇન્ડર!', '⚡ Mobile Flash Reminder!'),
+                        style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                      ),
+                      Text(
+                        '${_t("સમય", "Time")}: $timeFormatted • ${_t("ટોન", "Tone")}: $ringtone',
+                        style: const TextStyle(color: Colors.white70, fontSize: 11),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  tooltip: _t('રિંગટોન બંધ કરો', 'Stop Ringtone'),
+                  icon: Icon(ringMuted ? Icons.volume_off : Icons.stop_circle, color: Colors.white, size: 26),
+                  onPressed: () async {
+                    await _stopRingtone();
+                    setDlgState(() => ringMuted = true);
+                  },
+                ),
+              ],
+            ),
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (!ringMuted)
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(foregroundColor: Colors.redAccent, side: const BorderSide(color: Colors.redAccent)),
+                      icon: const Icon(Icons.volume_off, size: 18),
+                      label: Text(_t('🔇 રિંગટોન અત્યારે જ બંધ કરો', '🔇 Stop Ringtone Now')),
+                      onPressed: () async {
+                        await _stopRingtone();
+                        setDlgState(() => ringMuted = true);
+                      },
                     ),
-                    Text(
-                      'સમય: $timeFormatted • ટોન: $ringtone',
-                      style: const TextStyle(color: Colors.white70, fontSize: 11),
+                  ),
+                const SizedBox(height: 8),
+                Text(
+                  '${item['type']}: ${item['toTarget']}',
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '${_t("ચૂકવવાની / રોકાણ રકમ", "Amount Due")}: ₹${((item['amount'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(0)}',
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.teal),
+                ),
+                Text(
+                  '${_t("ફ્રીક્વન્સી", "Frequency")}: ${item['sipFrequency'] ?? _t("માસિક (Monthly)", "Monthly")} • ${_t("તારીખ", "Day")}: ${item['day']}',
+                  style: const TextStyle(fontSize: 12),
+                ),
+                const Divider(height: 18),
+                Text(
+                  _t('એક્શન પસંદ કરો:', 'Choose Action:'),
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                ),
+                const SizedBox(height: 6),
+                // ૧. પેમેન્ટ કમ્પલિટ થઈ ગયું
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade700, foregroundColor: Colors.white),
+                    icon: const Icon(Icons.check_circle, size: 18),
+                    label: Text(_t('✅ પેમેન્ટ કમ્પલિટ થઈ ગયું (ઓટો એન્ટ્રી / નો-ડબલ)', '✅ Payment Completed (Auto Entry / No Duplicate)'), style: const TextStyle(fontSize: 12)),
+                    onPressed: () async {
+                      await _stopRingtone();
+                      _isFlashPopupOpen = false;
+                      if (ctx.mounted) Navigator.pop(ctx);
+                      _confirmAndExecuteManualReminder(item);
+                    },
+                  ),
+                ),
+                const SizedBox(height: 10),
+                // ૨. થોડા સમય પછી ફરી યાદ કરાવો (Snooze)
+                Text(
+                  _t('⏰ થોડી વાર પછી કરવું છે / ફરી યાદ કરાવો:', '⏰ Do Later / Remind Again After:'),
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: [
+                    for (final mins in [5, 10, 15, 30, 60, 120])
+                      ActionChip(
+                        label: Text(mins >= 60 ? '${mins ~/ 60} ${_t("કલાક", "hr")}' : '$mins ${_t("મિનિટ", "min")}', style: const TextStyle(fontSize: 11)),
+                        onPressed: () async {
+                          await _stopRingtone();
+                          _scheduleSnoozeForReminder(item, Duration(minutes: mins));
+                          _isFlashPopupOpen = false;
+                          if (ctx.mounted) Navigator.pop(ctx);
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(_t('⏰ $mins મિનિટ પછી ફરી રિંગટોન સાથે યાદ કરાવશે!', '⏰ Will remind again in $mins minutes!')),
+                                backgroundColor: Colors.amber.shade800,
+                              ),
+                            );
+                          }
+                        },
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: customSnoozeCtrl,
+                        keyboardType: TextInputType.number,
+                        decoration: InputDecoration(
+                          isDense: true,
+                          border: const OutlineInputBorder(),
+                          labelText: _t('કસ્ટમ સમય', 'Custom Time'),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    DropdownButton<String>(
+                      value: snoozeUnit,
+                      items: [
+                        DropdownMenuItem(value: 'min', child: Text(_t('મિનિટ', 'Min'))),
+                        DropdownMenuItem(value: 'hour', child: Text(_t('કલાક', 'Hr'))),
+                      ],
+                      onChanged: (v) => setDlgState(() => snoozeUnit = v!),
+                    ),
+                    const SizedBox(width: 6),
+                    ElevatedButton(
+                      onPressed: () async {
+                        final val = int.tryParse(customSnoozeCtrl.text.trim()) ?? 15;
+                        if (val <= 0) return;
+                        await _stopRingtone();
+                        final dur = snoozeUnit == 'hour' ? Duration(hours: val) : Duration(minutes: val);
+                        _scheduleSnoozeForReminder(item, dur);
+                        _isFlashPopupOpen = false;
+                        if (ctx.mounted) Navigator.pop(ctx);
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(_t(
+                                '⏰ $val ${snoozeUnit == "hour" ? "કલાક" : "મિનિટ"} પછી ફરી રિમાઇન્ડર વાગશે!',
+                                '⏰ Reminder snoozed for $val ${snoozeUnit == "hour" ? "hour(s)" : "minute(s)"}!',
+                              )),
+                              backgroundColor: Colors.amber.shade800,
+                            ),
+                          );
+                        }
+                      },
+                      child: Text(_t('સેટ કરો', 'Set')),
                     ),
                   ],
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '${item['type']}: ${item['toTarget']}',
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'ચૂકવવાની / રોકાણ રકમ: ₹${((item['amount'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(0)}',
-              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.teal),
-            ),
-            const SizedBox(height: 4),
-            Text('નિર્ધારિત તારીખ: દર મહિનાની ${item['day']} તારીખ'),
-            const SizedBox(height: 10),
-            const Text(
-              'શું તમે આ ઓટો-પે / SIP વ્યવહાર અત્યારે ખાતામાં નોંધવા માંગો છો?',
-              style: TextStyle(fontSize: 12.5),
+          actions: [
+            TextButton(
+              onPressed: () async {
+                await _stopRingtone();
+                _isFlashPopupOpen = false;
+                if (ctx.mounted) Navigator.pop(ctx);
+              },
+              child: Text(_t('બંધ કરો', 'Close')),
             ),
           ],
         ),
-        actions: [
-          TextButton.icon(
-            icon: const Icon(Icons.snooze, size: 16),
-            label: const Text('પછી યાદ અપાવો'),
-            onPressed: () {
-              _isFlashPopupOpen = false;
-              Navigator.pop(ctx);
-            },
-          ),
-          ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
-            icon: const Icon(Icons.check_circle, size: 16),
-            label: const Text('અત્યારે જ ચૂકવો / નોંધો'),
-            onPressed: () {
-              _isFlashPopupOpen = false;
-              Navigator.pop(ctx);
-              _confirmAndExecuteManualReminder(item);
-            },
-          ),
-        ],
       ),
-    ).then((_) => _isFlashPopupOpen = false);
+    ).then((_) {
+      _stopRingtone();
+      _isFlashPopupOpen = false;
+    });
   }
 
   // =========================================================
@@ -1601,8 +2139,29 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       final String fromAccId = item['fromAccountId'] ?? '';
       final String toTarget = item['toTarget'] ?? '';
       final String lastExecution = item['lastProcessed'] ?? '';
+      final String cycleKey = _getReminderCycleKey(item, now);
+      final int intervalDays = (item['sipIntervalDays'] as num?)?.toInt() ??
+          _getIntervalDaysForFrequency((item['sipFrequency'] ?? 'માસિક (Monthly)').toString());
 
-      if (lastExecution != currentMonthKey && now.day >= day) {
+      // જો આ સાઇકલમાં એન્ટ્રી પહેલેથી થઈ ગઈ હોય તો ડબલ એન્ટ્રી ન કરો
+      if (_hasExistingEntryForReminder(item, referenceDate: now)) {
+        item['lastProcessed'] = cycleKey;
+        autoPayBox.put(item['id'], item);
+        continue;
+      }
+
+      bool isDueNow = false;
+      if (intervalDays == 1) {
+        isDueNow = true;
+      } else if (intervalDays == 7) {
+        isDueNow = (now.weekday >= day.clamp(1, 7));
+      } else if (intervalDays == 15) {
+        isDueNow = (now.day >= day || now.day >= ((day + 15) > 28 ? 15 : day + 15));
+      } else {
+        isDueNow = (now.day >= day);
+      }
+
+      if (lastExecution != cycleKey && isDueNow) {
         final txId = "auto_${DateTime.now().millisecondsSinceEpoch}_${item['id']}";
         final fromAcc = accounts.firstWhere(
           (a) => a['id'].toString() == fromAccId,
@@ -1635,9 +2194,11 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           'accountId': fromAccId,
           'accountName': fromAcc['name'],
           'isCcSettlement': type == 'CreditCard',
+          'reminderId': item['id'].toString(),
+          'reminderCycleKey': cycleKey,
         });
 
-        item['lastProcessed'] = currentMonthKey;
+        item['lastProcessed'] = cycleKey;
         autoPayBox.put(item['id'], item);
       }
     }
@@ -1752,43 +2313,64 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
 
   void _confirmAndExecuteManualReminder(Map<dynamic, dynamic> item) {
     final now = DateTime.now();
-    final amt = (item['amount'] as num).toDouble();
+    final amt = (item['amount'] as num?)?.toDouble() ?? 0.0;
     final type = item['type'] ?? 'AutoPay';
     final fromAccId = item['fromAccountId'];
     final toTarget = item['toTarget'] ?? '';
-    final txId = "manual_rem_${DateTime.now().millisecondsSinceEpoch}";
-    final fromAcc = accounts.firstWhere(
-      (a) => a['id'].toString() == fromAccId,
-      orElse: () => {'name': 'ખાતું'},
-    );
+    final String cycleKey = _getReminderCycleKey(item, now);
+    final String remId = item['id'].toString();
 
-    String catEffect = 'expenseDebit';
-    if (type == 'SIP' || type == 'GovScheme') {
-      catEffect = 'assetIncrease';
-    } else if (type == 'EMI' || type == 'CreditCard') {
-      catEffect = 'loanRepay';
+    // સ્નૂઝ ટાઇમર અને રિંગટોન કાયમ માટે બંધ કરો (આ સાઇકલ માટે ફરી રિંગ નહીં વાગે)
+    _stopRingtone();
+    _snoozeTimers[remId]?.cancel();
+    _snoozeTimers.remove(remId);
+
+    final bool alreadyExists = _hasExistingEntryForReminder(item, referenceDate: now);
+    if (!alreadyExists) {
+      final txId = "manual_rem_${DateTime.now().millisecondsSinceEpoch}";
+      final fromAcc = accounts.firstWhere(
+        (a) => a['id'].toString() == fromAccId,
+        orElse: () => {'name': _t('ખાતું', 'Account')},
+      );
+
+      String catEffect = 'expenseDebit';
+      if (type == 'SIP' || type == 'GovScheme') {
+        catEffect = 'assetIncrease';
+      } else if (type == 'EMI' || type == 'CreditCard') {
+        catEffect = 'loanRepay';
+      }
+
+      transactionsBox.put(txId, {
+        'id': txId,
+        'title': "$type: $toTarget",
+        'amount': amt,
+        'date': now.toIso8601String(),
+        'categoryId': type == 'SIP' ? '3' : (type == 'EMI' || type == 'CreditCard' ? '5' : '6'),
+        'categoryName': type == 'SIP' ? _t('શેરબજાર / મ્યુચ્યુઅલ ફંડ', 'Stocks / Mutual Fund') : _t('EMI / વીમા / બિલ ચુકવણી', 'EMI / Insurance / Bill'),
+        'categoryEffect': catEffect,
+        'categoryColor': Colors.teal.toARGB32(),
+        'accountId': fromAccId,
+        'accountName': fromAcc['name'],
+        'isCcSettlement': type == 'CreditCard',
+        'reminderId': remId,
+        'reminderCycleKey': cycleKey,
+      });
     }
 
-    transactionsBox.put(txId, {
-      'id': txId,
-      'title': "$type: $toTarget",
-      'amount': amt,
-      'date': now.toIso8601String(),
-      'categoryId': type == 'SIP' ? '3' : (type == 'EMI' || type == 'CreditCard' ? '5' : '6'),
-      'categoryName': type == 'SIP' ? 'શેરબજાર / મ્યુચ્યુઅલ ફંડ' : 'EMI / વીમા / બિલ ચુકવણી',
-      'categoryEffect': catEffect,
-      'categoryColor': Colors.teal.toARGB32(),
-      'accountId': fromAccId,
-      'accountName': fromAcc['name'],
-      'isCcSettlement': type == 'CreditCard',
-    });
-
-    item['lastProcessed'] = "${now.year}-${now.month}";
+    item['lastProcessed'] = cycleKey;
+    item['snoozeUntil'] = null;
     autoPayBox.put(item['id'], item);
     setState(() {});
 
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('₹${amt.toStringAsFixed(0)} નો $type વ્યવહાર સફળતાપૂર્વક નોંધાઈ ગયો!'), backgroundColor: Colors.green),
+      SnackBar(
+        content: Text(
+          alreadyExists
+              ? _t('✅ પેમેન્ટ કમ્પલિટ માર્ક થયું (એન્ટ્રી પહેલેથી હાજર હોવાથી ડબલ એન્ટ્રી ટાળવામાં આવી).', '✅ Marked Completed (Entry already exists, duplicate avoided).')
+              : _t('✅ ₹${amt.toStringAsFixed(0)} નો $type વ્યવહાર ઓટોમેટિક નોંધાઈ ગયો!', '✅ ₹${amt.toStringAsFixed(0)} $type entry added automatically!'),
+        ),
+        backgroundColor: Colors.green,
+      ),
     );
   }
 
@@ -1857,7 +2439,15 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       }
     }).toList();
 
-    list.sort((a, b) => DateTime.parse(b['date']).compareTo(DateTime.parse(a['date'])));
+    if (_txSortMode == 'date_asc') {
+      list.sort((a, b) => DateTime.parse(a['date']).compareTo(DateTime.parse(b['date'])));
+    } else if (_txSortMode == 'amount_desc') {
+      list.sort((a, b) => ((b['amount'] as num?)?.toDouble() ?? 0.0).compareTo(((a['amount'] as num?)?.toDouble() ?? 0.0)));
+    } else if (_txSortMode == 'amount_asc') {
+      list.sort((a, b) => ((a['amount'] as num?)?.toDouble() ?? 0.0).compareTo(((b['amount'] as num?)?.toDouble() ?? 0.0)));
+    } else {
+      list.sort((a, b) => DateTime.parse(b['date']).compareTo(DateTime.parse(a['date'])));
+    }
     return list;
   }
 
@@ -5292,38 +5882,253 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     );
   }
 
-  // --- ટેબ ૩: બજેટ લક્ષ્યાંક ---
+  // --- ટેબ ૩: બજેટ લક્ષ્યાંક (₹ અને % બંનેમાં + ફાઇનાન્સિયલ ગોલ / રિટાયરમેન્ટ પ્લાનર) ---
+  double _getBudgetReferenceIncome() {
+    final double savedRef = (budgetBox.get('refIncome_$budgetPeriod', defaultValue: 0.0) as num).toDouble();
+    if (savedRef > 0) return savedRef;
+    final double actualInc = _calculateTotal('incomeCredit');
+    return actualInc > 0 ? actualInc : 50000.0;
+  }
+
+  double _calculateRequiredMonthlySip(double targetGap, double annualReturnPct, int months) {
+    if (targetGap <= 0) return 0.0;
+    if (months <= 1) return targetGap;
+    final double r = (annualReturnPct / 100.0) / 12.0;
+    if (r <= 0) return targetGap / months;
+    final double factor = (math.pow(1 + r, months) - 1) / r * (1 + r);
+    return factor > 0 ? targetGap / factor : targetGap / months;
+  }
+
+  double _calculateFutureValue({
+    required double currentSaved,
+    required double monthlySip,
+    required double annualReturnPct,
+    required int months,
+  }) {
+    if (months <= 0) return currentSaved;
+    final double r = (annualReturnPct / 100.0) / 12.0;
+    if (r <= 0) return currentSaved + (monthlySip * months);
+    final double fvLump = currentSaved * math.pow(1 + r, months);
+    final double fvSip = monthlySip * ((math.pow(1 + r, months) - 1) / r) * (1 + r);
+    return fvLump + fvSip;
+  }
+
+  void _openAddOrEditGoalDialog({Map<dynamic, dynamic>? existingGoal}) {
+    final nameCtrl = TextEditingController(text: existingGoal != null ? (existingGoal['name'] ?? '') : '');
+    final targetCtrl = TextEditingController(text: existingGoal != null ? (existingGoal['targetAmount'] ?? 0).toString() : '');
+    final savedCtrl = TextEditingController(text: existingGoal != null ? (existingGoal['savedAmount'] ?? 0).toString() : '0');
+    final monthlyPlanCtrl = TextEditingController(text: existingGoal != null ? (existingGoal['monthlyContribution'] ?? 0).toString() : '0');
+    final rateCtrl = TextEditingController(text: existingGoal != null ? (existingGoal['expectedReturn'] ?? 12.0).toString() : '12.0');
+    final planCtrl = TextEditingController(text: existingGoal != null ? (existingGoal['investmentPlan'] ?? '') : '');
+    String goalType = existingGoal != null ? (existingGoal['goalType'] ?? 'રિટાયરમેન્ટ પ્લાન') : 'રિટાયરમેન્ટ પ્લાન';
+    DateTime targetDate = existingGoal != null && existingGoal['targetDate'] != null
+        ? (DateTime.tryParse(existingGoal['targetDate'].toString()) ?? DateTime.now().add(const Duration(days: 365 * 5)))
+        : DateTime.now().add(const Duration(days: 365 * 5));
+    bool enableReminder = existingGoal != null ? (existingGoal['enableReminder'] ?? true) : true;
+
+    final List<String> goalTypes = [
+      'રિટાયરમેન્ટ પ્લાન',
+      'બાળકોનું શિક્ષણ / લગ્ન',
+      'નવું ઘર / પ્રોપર્ટી',
+      'કાર / વાહન ખરીદી',
+      'ઇમરજન્સી ફંડ',
+      'પ્રવાસ / ખાસ ઘટના',
+      'અન્ય ફાઇનાન્સિયલ લક્ષ્યાંક',
+    ];
+    if (!goalTypes.contains(goalType)) goalTypes.add(goalType);
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) => AlertDialog(
+          title: Text(existingGoal == null
+              ? _t('નવું લક્ષ્યાંક / રિટાયરમેન્ટ પ્લાન ઉમેરો', 'Add Goal / Event / Retirement Plan')
+              : _t('લક્ષ્યાંક પ્લાન સુધારો', 'Edit Goal Plan')),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                DropdownButtonFormField<String>(
+                  initialValue: goalType,
+                  isExpanded: true,
+                  decoration: InputDecoration(labelText: _t('લક્ષ્યાંક / ઘટનાનો પ્રકાર', 'Goal / Event Type')),
+                  items: goalTypes.map((g) => DropdownMenuItem(value: g, child: Text(g, style: const TextStyle(fontSize: 12.5)))).toList(),
+                  onChanged: (v) => setDlgState(() => goalType = v!),
+                ),
+                TextField(
+                  controller: nameCtrl,
+                  decoration: InputDecoration(labelText: _t('લક્ષ્યાંકનું નામ (દા.ત. રિટાયરમેન્ટ 2045)', 'Goal Name (e.g. Retirement 2045)')),
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: targetCtrl,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        decoration: InputDecoration(labelText: _t('લક્ષ્ય રકમ (₹)', 'Target Amount (₹)')),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        controller: savedCtrl,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        decoration: InputDecoration(labelText: _t('હાલ ભેગી થયેલ (₹)', 'Currently Saved (₹)')),
+                      ),
+                    ),
+                  ],
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: monthlyPlanCtrl,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        decoration: InputDecoration(labelText: _t('માસિક રોકાણ પ્લાન (₹)', 'Monthly Plan (₹)')),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        controller: rateCtrl,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        decoration: InputDecoration(labelText: _t('અંદાજિત વળતર (% p.a.)', 'Expected Return (%)')),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.calendar_month, size: 16),
+                  label: Text('${_t("લક્ષ્ય તારીખ", "Target Date")}: ${DateFormat("dd/MM/yyyy").format(targetDate)}'),
+                  onPressed: () async {
+                    final d = await showDatePicker(
+                      context: context,
+                      initialDate: _clampDate1800To2100(targetDate),
+                      firstDate: DateTime(1800, 1, 1),
+                      lastDate: DateTime(2100, 12, 31),
+                    );
+                    if (d != null) setDlgState(() => targetDate = d);
+                  },
+                ),
+                TextField(
+                  controller: planCtrl,
+                  maxLines: 3,
+                  decoration: InputDecoration(
+                    labelText: _t('પ્લાનિંગ વિગત (ક્યાં રોકાણ કરવું / કયા ખાતામાં બચત કરવી)', 'Planning Notes (Where to invest / Save in which account)'),
+                    hintText: _t('દા.ત. Nifty 50 Index Fund SIP + PPF + SBI Savings Account', 'e.g. Nifty 50 SIP + PPF + SBI Account'),
+                  ),
+                ),
+                SwitchListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(_t('લક્ષ્યાંક પ્રગતિ રિમાઇન્ડર ચાલુ રાખો', 'Enable Goal Progress Reminder'), style: const TextStyle(fontSize: 12)),
+                  value: enableReminder,
+                  onChanged: (v) => setDlgState(() => enableReminder = v),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: Text(_t('રદ', 'Cancel'))),
+            ElevatedButton(
+              onPressed: () {
+                final tAmt = double.tryParse(targetCtrl.text) ?? 0.0;
+                if (nameCtrl.text.trim().isEmpty || tAmt <= 0) return;
+                final id = existingGoal != null ? existingGoal['id'].toString() : "goal_${DateTime.now().millisecondsSinceEpoch}";
+                goalsBox.put(id, {
+                  'id': id,
+                  'goalType': goalType,
+                  'name': nameCtrl.text.trim(),
+                  'targetAmount': tAmt,
+                  'savedAmount': double.tryParse(savedCtrl.text) ?? 0.0,
+                  'monthlyContribution': double.tryParse(monthlyPlanCtrl.text) ?? 0.0,
+                  'expectedReturn': double.tryParse(rateCtrl.text) ?? 12.0,
+                  'targetDate': targetDate.toIso8601String(),
+                  'investmentPlan': planCtrl.text.trim(),
+                  'enableReminder': enableReminder,
+                });
+                setState(() {});
+                Navigator.pop(ctx);
+              },
+              child: Text(_t('સેવ કરો', 'Save')),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildBudgetTab() {
+    final double refIncome = _getBudgetReferenceIncome();
+    final goalsList = goalsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
+
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(12.0),
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 85),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               DropdownButton<String>(
                 value: budgetPeriod,
-                items: ['દૈનિક', 'માસિક', 'ત્રિમાસિક', 'છ માસિક', 'વાર્ષિક'].map((p) => DropdownMenuItem(value: p, child: Text('$p બજેટ'))).toList(),
+                items: ['દૈનિક', 'માસિક', 'ત્રિમાસિક', 'છ માસિક', 'વાર્ષિક']
+                    .map((p) => DropdownMenuItem(value: p, child: Text('$p ${_t("બજેટ", "Budget")}')))
+                    .toList(),
                 onChanged: (v) => setState(() => budgetPeriod = v!),
               ),
               ElevatedButton.icon(
                 icon: const Icon(Icons.tune, size: 16),
-                label: const Text('લક્ષ્યાંક બદલો'),
+                label: Text(_t('લક્ષ્યાંક બદલો', 'Edit Targets')),
                 onPressed: _openCategoryBudgetDialog,
               ),
             ],
           ),
-          const SizedBox(height: 8),
+          Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: adaptiveTintBg(Colors.teal),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  '${_t("આધાર આવક (% ગણતરી માટે)", "Base Income (for %)")}: ₹${refIncome.toStringAsFixed(0)}',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: adaptiveAccentText(Colors.teal)),
+                ),
+                InkWell(
+                  onTap: _openCategoryBudgetDialog,
+                  child: Text(_t('સુધારો ✎', 'Edit ✎'), style: const TextStyle(fontSize: 11.5, color: Colors.teal, fontWeight: FontWeight.bold)),
+                ),
+              ],
+            ),
+          ),
           ...categories.map((cat) {
             final budgetKey = 'budget_${budgetPeriod}_${cat['id']}';
-            final target = (budgetBox.get(budgetKey, defaultValue: 0.0) as num).toDouble();
+            final pctKey = 'budgetPct_${budgetPeriod}_${cat['id']}';
+            final modeKey = 'budgetMode_${budgetPeriod}_${cat['id']}';
+            final String mode = (budgetBox.get(modeKey, defaultValue: 'rs') ?? 'rs').toString();
+            double target = (budgetBox.get(budgetKey, defaultValue: 0.0) as num).toDouble();
+            double targetPct = (budgetBox.get(pctKey, defaultValue: 0.0) as num).toDouble();
+
+            if (mode == 'pct' && targetPct > 0) {
+              target = (refIncome * targetPct) / 100.0;
+            } else if (target > 0 && refIncome > 0) {
+              targetPct = (target / refIncome) * 100.0;
+            }
+
             final actual = filteredTransactions
                 .where((t) => t['categoryId'].toString() == cat['id'].toString())
                 .fold(0.0, (sum, item) => sum + (item['amount'] as num).toDouble());
 
             if (target <= 0 && actual <= 0) return const SizedBox();
-            final percent = target > 0 ? (actual / target).clamp(0.0, 1.0) : 1.0;
-            final isOver = target > 0 && actual > target;
+            final double usedPct = target > 0 ? (actual / target) * 100.0 : 100.0;
+            final double progressVal = target > 0 ? (actual / target).clamp(0.0, 1.0) : 1.0;
+            final bool isOver = target > 0 && actual > target;
 
             return Card(
               margin: const EdgeInsets.symmetric(vertical: 4),
@@ -5335,17 +6140,164 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(cat['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
-                        Text('₹${actual.toStringAsFixed(0)} / ₹${target.toStringAsFixed(0)}', style: TextStyle(color: isOver ? Colors.redAccent : Colors.teal, fontWeight: FontWeight.bold)),
+                        Expanded(
+                          child: Text(cat['name'], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+                        ),
+                        Text(
+                          '₹${actual.toStringAsFixed(0)} / ₹${target.toStringAsFixed(0)} (${targetPct.toStringAsFixed(1)}%)',
+                          style: TextStyle(color: isOver ? Colors.redAccent : Colors.teal, fontWeight: FontWeight.bold, fontSize: 12.5),
+                        ),
                       ],
                     ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${_t("બજેટ વપરાશ", "Used")}: ${usedPct.toStringAsFixed(1)}% • ${_t("આવકના %", "% of Income")}: ${targetPct.toStringAsFixed(1)}% • ${isOver ? _t("⚠️ બજેટ કરતાં વધારે!", "⚠️ Over Budget!") : _t("બાકી", "Remaining") + ": ₹" + math.max(0.0, target - actual).toStringAsFixed(0)}',
+                      style: TextStyle(fontSize: 11, color: isOver ? Colors.redAccent : secondaryTextColor),
+                    ),
                     const SizedBox(height: 6),
-                    LinearProgressIndicator(value: percent, color: isOver ? Colors.redAccent : Colors.teal, minHeight: 8),
+                    LinearProgressIndicator(value: progressVal, color: isOver ? Colors.redAccent : Colors.teal, minHeight: 8),
                   ],
                 ),
               ),
             );
           }),
+
+          const Divider(height: 26),
+          // ફાઇનાન્સિયલ લક્ષ્યાંક / ઘટના / રિટાયરમેન્ટ પ્લાનર
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Text(
+                  _t('🎯 લક્ષ્યાંક / ઘટના / રિટાયરમેન્ટ પ્લાનર', '🎯 Goals / Event / Retirement Planner'),
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.indigo),
+                ),
+              ),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, foregroundColor: Colors.white),
+                icon: const Icon(Icons.flag, size: 16),
+                label: Text(_t('નવો પ્લાન', 'Add Goal')),
+                onPressed: () => _openAddOrEditGoalDialog(),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (goalsList.isEmpty)
+            Card(
+              color: adaptiveTintBg(Colors.indigo),
+              child: Padding(
+                padding: const EdgeInsets.all(14.0),
+                child: Text(
+                  _t(
+                    'કોઈ રિટાયરમેન્ટ કે ઘટના માટેનો લક્ષ્યાંક પ્લાન ઉમેરેલ નથી. "નવો પ્લાન" પર ક્લિક કરી કેટલા રૂપિયા ભેગા કરવા છે અને ક્યાં રોકાણ/બચત કરવી છે તે ગોઠવો.',
+                    'No financial goal or retirement plan added yet. Tap "Add Goal" to set target corpus, investment plan, and progress reminders.',
+                  ),
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+            )
+          else
+            ...goalsList.map((g) {
+              final double target = (g['targetAmount'] as num?)?.toDouble() ?? 0.0;
+              final double saved = (g['savedAmount'] as num?)?.toDouble() ?? 0.0;
+              final double monthlyPlan = (g['monthlyContribution'] as num?)?.toDouble() ?? 0.0;
+              final double retRate = (g['expectedReturn'] as num?)?.toDouble() ?? 12.0;
+              final DateTime tDate = DateTime.tryParse((g['targetDate'] ?? '').toString()) ?? DateTime.now().add(const Duration(days: 365));
+              final int monthsLeft = math.max(1, ((tDate.difference(DateTime.now()).inDays) / 30.44).round());
+              final double remaining = math.max(0.0, target - saved);
+              final double pctDone = target > 0 ? ((saved / target) * 100.0).clamp(0.0, 100.0) : 0.0;
+              final bool achieved = saved >= target && target > 0;
+              final double reqMonthlySip = _calculateRequiredMonthlySip(remaining, retRate, monthsLeft);
+              final double projectedFv = _calculateFutureValue(
+                currentSaved: saved,
+                monthlySip: monthlyPlan > 0 ? monthlyPlan : reqMonthlySip,
+                annualReturnPct: retRate,
+                months: monthsLeft,
+              );
+
+              return Card(
+                margin: const EdgeInsets.symmetric(vertical: 5),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  side: BorderSide(color: achieved ? Colors.green : Colors.indigo.shade200, width: 1.2),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(12.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(achieved ? Icons.emoji_events : Icons.flag_circle, color: achieved ? Colors.green : Colors.indigo),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('${g['name']} (${g['goalType']})', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                                Text(
+                                  '${_t("લક્ષ્ય તારીખ", "Target")}: ${DateFormat("dd/MM/yyyy").format(tDate)} ($monthsLeft ${_t("મહિના બાકી", "months left")})',
+                                  style: TextStyle(fontSize: 11, color: secondaryTextColor),
+                                ),
+                              ],
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.edit, size: 18, color: Colors.teal),
+                            onPressed: () => _openAddOrEditGoalDialog(existingGoal: g),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.delete, size: 18, color: Colors.red),
+                            onPressed: () {
+                              goalsBox.delete(g['id']);
+                              setState(() {});
+                            },
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: achieved ? adaptiveTintBg(Colors.green) : adaptiveTintBg(Colors.amber),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          achieved
+                              ? _t('🎉 અભિનંદન! તમારું લક્ષ્યાંક (₹${target.toStringAsFixed(0)}) પ્રાપ્ત થઈ ગયું છે!', '🎉 Congratulations! Your goal (₹${target.toStringAsFixed(0)}) has been achieved!')
+                              : _t('🔔 રિમાઇન્ડર: તમે લક્ષ્યાંકથી હજી ₹${remaining.toStringAsFixed(0)} (${(100 - pctDone).toStringAsFixed(1)}%) દૂર છો.', '🔔 Reminder: You are ₹${remaining.toStringAsFixed(0)} (${(100 - pctDone).toStringAsFixed(1)}%) away from your target.'),
+                          style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: achieved ? adaptiveAccentText(Colors.green) : adaptiveAccentText(Colors.amber)),
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text('${_t("ભેગી થયેલ", "Saved")}: ₹${saved.toStringAsFixed(0)} (${pctDone.toStringAsFixed(1)}%)', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          Text('${_t("લક્ષ્ય", "Target")}: ₹${target.toStringAsFixed(0)}', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.indigo)),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      LinearProgressIndicator(value: (pctDone / 100.0).clamp(0.0, 1.0), color: achieved ? Colors.green : Colors.indigo, minHeight: 8),
+                      const SizedBox(height: 6),
+                      Text(
+                        '${_t("જરૂરી માસિક SIP", "Required Monthly SIP")} (@${retRate.toStringAsFixed(1)}%): ₹${reqMonthlySip.toStringAsFixed(0)} • ${_t("અંદાજિત ભવિષ્યની મૂડી", "Projected Corpus")}: ₹${projectedFv.toStringAsFixed(0)}',
+                        style: const TextStyle(fontSize: 11.5, color: Colors.teal, fontWeight: FontWeight.bold),
+                      ),
+                      if ((g['investmentPlan'] ?? '').toString().isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                            '📌 ${_t("રોકાણ / બચત પ્લાન", "Investment / Savings Plan")}: ${g['investmentPlan']}',
+                            style: TextStyle(fontSize: 11.5, color: primaryTextColor),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              );
+            }),
         ],
       ),
     );
@@ -5463,7 +6415,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                     ),
                     title: Text(m['schemeName'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                     subtitle: Text(
-                      'પ્રકાર: ${isSip ? 'માસિક SIP' : 'વન-ટાઇમ Lumpsum'} • તારીખ: ${DateFormat('dd/MM/yyyy').format(dt)}\n'
+                      '${_t("પ્રકાર", "Mode")}: ${isSip ? (m['sipFrequency'] ?? _t('માસિક SIP', 'Monthly SIP')) : _t('વન-ટાઇમ Lumpsum', 'One-Time Lumpsum')} • ${_t("તારીખ", "Date")}: ${DateFormat('dd/MM/yyyy').format(dt)}\n'
                       'રોકાણ: ₹${inv.toStringAsFixed(0)} • યુનિટ્સ: ${units.toStringAsFixed(3)}\n'
                       'ખરીદ NAV: ₹${buyNav.toStringAsFixed(2)} | હાલની NAV: ₹${curNav.toStringAsFixed(2)} | મૂલ્ય: ₹${val.toStringAsFixed(0)}',
                       style: const TextStyle(fontSize: 11.5),
@@ -5532,6 +6484,13 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     String navMode = existingItem != null ? (existingItem['navMode'] ?? 'auto') : 'auto';
     String investmentMode = existingItem != null ? (existingItem['investmentMode'] ?? 'Lumpsum') : 'Lumpsum';
     String executionMode = existingItem != null ? (existingItem['executionMode'] ?? 'auto') : 'auto';
+    List<Map<String, dynamic>> sipFreqList = _getSipFrequencyOptions();
+    String sipFrequency = existingItem != null && existingItem['sipFrequency'] != null
+        ? existingItem['sipFrequency'].toString()
+        : sipFreqList.first['name'].toString();
+    if (!sipFreqList.any((f) => f['name'] == sipFrequency)) {
+      sipFreqList.add({'name': sipFrequency, 'days': _getIntervalDaysForFrequency(sipFrequency)});
+    }
     String selectedAccId = existingItem != null && existingItem['accountId'] != null
         ? existingItem['accountId'].toString()
         : (accounts.isNotEmpty ? accounts.first['id'].toString() : '');
@@ -5707,17 +6666,45 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                     decoration: const InputDecoration(labelText: 'રોકાણ રકમ (₹)'),
                   ),
                   if (investmentMode == 'SIP') ...[
+                    Row(
+                      children: [
+                        Expanded(
+                          child: DropdownButtonFormField<String>(
+                            initialValue: sipFrequency,
+                            isExpanded: true,
+                            decoration: InputDecoration(labelText: _t('SIP ફ્રીક્વન્સી (માસિક/અઠવાડિક/15 દિવસ/દૈનિક)', 'SIP Frequency')),
+                            items: sipFreqList
+                                .map((f) => DropdownMenuItem(value: f['name'].toString(), child: Text(f['name'].toString(), style: const TextStyle(fontSize: 12))))
+                                .toList(),
+                            onChanged: (v) => setDlgState(() => sipFrequency = v!),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: _t('નવી ફ્રીક્વન્સી ઉમેરો', 'Add Custom Frequency'),
+                          icon: const Icon(Icons.add_circle, color: Colors.teal),
+                          onPressed: () async {
+                            final added = await _openAddCustomSipFrequencyDialog();
+                            if (added != null) {
+                              setDlgState(() {
+                                sipFreqList = _getSipFrequencyOptions();
+                                sipFrequency = added;
+                              });
+                            }
+                          },
+                        ),
+                      ],
+                    ),
                     TextField(
                       controller: sipDayCtrl,
                       keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: 'દર મહિનાની SIP તારીખ (1-28)'),
+                      decoration: InputDecoration(labelText: _t('SIP તારીખ / વાર (1-28)', 'SIP Day (1-28)')),
                     ),
                     DropdownButtonFormField<String>(
                       initialValue: executionMode,
-                      decoration: const InputDecoration(labelText: 'SIP કપાત મોડ (ઓટો / મેન્યુઅલ)'),
-                      items: const [
-                        DropdownMenuItem(value: 'auto', child: Text('ઓટોમેટિક ખાતામાંથી કપાત')),
-                        DropdownMenuItem(value: 'manual', child: Text('મેન્યુઅલ (રીમાઇન્ડર પૂછીને)')),
+                      decoration: InputDecoration(labelText: _t('SIP કપાત મોડ (ઓટો / મેન્યુઅલ)', 'SIP Execution Mode')),
+                      items: [
+                        DropdownMenuItem(value: 'auto', child: Text(_t('ઓટોમેટિક ખાતામાંથી કપાત', 'Automatic Deduction'))),
+                        DropdownMenuItem(value: 'manual', child: Text(_t('મેન્યુઅલ (રીમાઇન્ડર પૂછીને)', 'Manual (Ask via Reminder)'))),
                       ],
                       onChanged: (v) => setDlgState(() => executionMode = v!),
                     ),
@@ -5743,6 +6730,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   final units = nav > 0 ? amt / nav : 0.0;
                   final id = existingItem != null ? existingItem['id'].toString() : "mf_${DateTime.now().millisecondsSinceEpoch}";
 
+                  final int sipInterval = _getIntervalDaysForFrequency(sipFrequency);
                   mfInvestmentsBox.put(id, {
                     'id': id,
                     'schemeName': schemeCtrl.text.trim(),
@@ -5752,6 +6740,8 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                     'units': units,
                     'navMode': navMode,
                     'investmentMode': investmentMode,
+                    'sipFrequency': sipFrequency,
+                    'sipIntervalDays': sipInterval,
                     'executionMode': executionMode,
                     'sipDay': int.tryParse(sipDayCtrl.text) ?? 5,
                     'accountId': selectedAccId,
@@ -5759,40 +6749,37 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                     'mfSubCategory': existingItem?['mfSubCategory'] ?? '',
                   });
 
-                  if (existingItem == null) {
-                    final acc = accounts.firstWhere((a) => a['id'].toString() == selectedAccId, orElse: () => {'name': 'બેંક'});
-                    final txId = "tx_mf_${DateTime.now().millisecondsSinceEpoch}";
-                    transactionsBox.put(txId, {
-                      'id': txId,
-                      'title': "MF $investmentMode: ${schemeCtrl.text.trim()}",
-                      'amount': amt,
-                      'date': pickedDate.toIso8601String(),
-                      'categoryId': '3',
-                      'categoryName': 'શેરબજાર / મ્યુચ્યુઅલ ફંડ',
-                      'categoryEffect': 'assetIncrease',
-                      'categoryColor': Colors.blue.toARGB32(),
-                      'accountId': selectedAccId,
-                      'accountName': acc['name'],
-                    });
+                  // દૈનિક નોંધમાં આપમેળે એડ/અપડેટ કરો
+                  _syncInvestmentToDailyTransaction(
+                    linkedInvestmentId: id,
+                    title: "MF $investmentMode${investmentMode == 'SIP' ? ' ($sipFrequency)' : ''}: ${schemeCtrl.text.trim()}",
+                    amount: amt,
+                    date: pickedDate,
+                    categoryId: '3',
+                    categoryName: _t('શેરબજાર / મ્યુચ્યુઅલ ફંડ', 'Stocks / Mutual Fund'),
+                    categoryColor: Colors.blue.toARGB32(),
+                    accountId: selectedAccId,
+                  );
 
-                    if (investmentMode == 'SIP') {
-                      final autoId = "auto_mf_${DateTime.now().millisecondsSinceEpoch}";
-                      autoPayBox.put(autoId, {
-                        'id': autoId,
-                        'type': 'SIP',
-                        'toTarget': schemeCtrl.text.trim(),
-                        'amount': amt,
-                        'day': int.tryParse(sipDayCtrl.text) ?? 5,
-                        'fromAccountId': selectedAccId,
-                        'executionMode': executionMode,
-                        'isActive': true,
-                        'enableFlashMessage': true,
-                        'reminderHour': 9,
-                        'reminderMinute': 0,
-                        'ringtoneName': 'ડિફોલ્ટ અલાર્મ ટોન (Default Alarm)',
-                        'lastProcessed': "${pickedDate.year}-${pickedDate.month}",
-                      });
-                    }
+                  if (existingItem == null && investmentMode == 'SIP') {
+                    final autoId = "auto_mf_${DateTime.now().millisecondsSinceEpoch}";
+                    autoPayBox.put(autoId, {
+                      'id': autoId,
+                      'type': 'SIP',
+                      'toTarget': schemeCtrl.text.trim(),
+                      'amount': amt,
+                      'day': int.tryParse(sipDayCtrl.text) ?? 5,
+                      'sipFrequency': sipFrequency,
+                      'sipIntervalDays': sipInterval,
+                      'fromAccountId': selectedAccId,
+                      'executionMode': executionMode,
+                      'isActive': true,
+                      'enableFlashMessage': true,
+                      'reminderHour': 9,
+                      'reminderMinute': 0,
+                      'ringtoneName': 'ડિફોલ્ટ અલાર્મ ટોન (Default Alarm)',
+                      'lastProcessed': _getReminderCycleKey({'sipFrequency': sipFrequency, 'sipIntervalDays': sipInterval}, pickedDate),
+                    });
                   }
 
                   setState(() {});
@@ -6040,6 +7027,10 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   void _openAddStockOrEtfDialog({Map<dynamic, dynamic>? existingItem}) {
     String instrumentType = existingItem != null ? (existingItem['instrumentType'] ?? 'Stock') : 'Stock';
     String investmentMode = existingItem != null ? (existingItem['investmentMode'] ?? 'Lumpsum') : 'Lumpsum';
+    List<Map<String, dynamic>> sipFreqList = _getSipFrequencyOptions();
+    String sipFrequency = existingItem != null && existingItem['sipFrequency'] != null
+        ? existingItem['sipFrequency'].toString()
+        : sipFreqList.first['name'].toString();
     final symbolCtrl = TextEditingController(text: existingItem != null ? existingItem['symbol'] : '');
     final qtyCtrl = TextEditingController(text: existingItem != null ? existingItem['quantity'].toString() : '1');
     final buyPriceCtrl = TextEditingController(text: existingItem != null ? existingItem['buyPrice'].toString() : '');
@@ -6059,13 +7050,41 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
               mainAxisSize: MainAxisSize.min,
               children: [
                 SegmentedButton<String>(
-                  segments: const [
-                    ButtonSegment(value: 'Lumpsum', label: Text('લમસમ (Lumpsum)', style: TextStyle(fontSize: 11.5))),
-                    ButtonSegment(value: 'SIP', label: Text('માસિક Stock SIP', style: TextStyle(fontSize: 11.5))),
+                  segments: [
+                    ButtonSegment(value: 'Lumpsum', label: Text(_t('લમસમ (Lumpsum)', 'Lumpsum'), style: const TextStyle(fontSize: 11.5))),
+                    ButtonSegment(value: 'SIP', label: Text(_t('Stock SIP', 'Stock SIP'), style: const TextStyle(fontSize: 11.5))),
                   ],
                   selected: {investmentMode},
                   onSelectionChanged: (s) => setDlgState(() => investmentMode = s.first),
                 ),
+                if (investmentMode == 'SIP') ...[
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          initialValue: sipFrequency,
+                          isExpanded: true,
+                          decoration: InputDecoration(labelText: _t('SIP ફ્રીક્વન્સી', 'SIP Frequency')),
+                          items: sipFreqList.map((f) => DropdownMenuItem(value: f['name'].toString(), child: Text(f['name'].toString(), style: const TextStyle(fontSize: 12)))).toList(),
+                          onChanged: (v) => setDlgState(() => sipFrequency = v!),
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.add_circle, color: Colors.teal),
+                        onPressed: () async {
+                          final added = await _openAddCustomSipFrequencyDialog();
+                          if (added != null) {
+                            setDlgState(() {
+                              sipFreqList = _getSipFrequencyOptions();
+                              sipFrequency = added;
+                            });
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                ],
                 const SizedBox(height: 8),
                 DropdownButtonFormField<String>(
                   initialValue: instrumentType,
@@ -6159,10 +7178,13 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                 final dt = DateTime(pickedDate.year, pickedDate.month, pickedDate.day, pickedTime.hour, pickedTime.minute);
                 final id = existingItem != null ? existingItem['id'].toString() : "stk_${DateTime.now().millisecondsSinceEpoch}";
 
+                final int sipInterval = _getIntervalDaysForFrequency(sipFrequency);
                 stockInvestmentsBox.put(id, {
                   'id': id,
                   'instrumentType': instrumentType,
                   'investmentMode': investmentMode,
+                  'sipFrequency': sipFrequency,
+                  'sipIntervalDays': sipInterval,
                   'symbol': symbolCtrl.text.trim().toUpperCase(),
                   'quantity': qty,
                   'buyPrice': price,
@@ -6172,23 +7194,17 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   'date': dt.toIso8601String(),
                 });
 
-                if (existingItem == null) {
-                  final acc = accounts.firstWhere((a) => a['id'].toString() == selectedAccId);
-                  final txId = "tx_stk_${DateTime.now().millisecondsSinceEpoch}";
-                  transactionsBox.put(txId, {
-                    'id': txId,
-                    'title': "$instrumentType ($investmentMode): ${symbolCtrl.text.trim().toUpperCase()} ($qty Qty)",
-                    'amount': totalAmt,
-                    'date': dt.toIso8601String(),
-                    'hasTime': true,
-                    'categoryId': '3',
-                    'categoryName': 'શેરબજાર / મ્યુચ્યુઅલ ફંડ',
-                    'categoryEffect': 'assetIncrease',
-                    'categoryColor': Colors.blue.toARGB32(),
-                    'accountId': selectedAccId,
-                    'accountName': acc['name'],
-                  });
-                }
+                _syncInvestmentToDailyTransaction(
+                  linkedInvestmentId: id,
+                  title: "$instrumentType ($investmentMode${investmentMode == 'SIP' ? ' - $sipFrequency' : ''}): ${symbolCtrl.text.trim().toUpperCase()} ($qty Qty)",
+                  amount: totalAmt,
+                  date: dt,
+                  hasTime: true,
+                  categoryId: '3',
+                  categoryName: _t('શેરબજાર / મ્યુચ્યુઅલ ફંડ', 'Stocks / Mutual Fund'),
+                  categoryColor: Colors.blue.toARGB32(),
+                  accountId: selectedAccId,
+                );
 
                 setState(() {});
                 Navigator.pop(ctx);
@@ -6658,21 +7674,17 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                     'isSettled': existingItem != null ? (existingItem['isSettled'] ?? false) : false,
                   });
 
-                  if (existingItem == null && deductInitialNow) {
-                    final acc = accounts.firstWhere((a) => a['id'].toString() == selectedAccId);
-                    final txId = "tx_fi_${DateTime.now().millisecondsSinceEpoch}";
-                    transactionsBox.put(txId, {
-                      'id': txId,
-                      'title': "$schemeType રોકાણ: ${titleCtrl.text.trim()} (${issuerCtrl.text.trim()})",
-                      'amount': pAmt,
-                      'date': startDate.toIso8601String(),
-                      'categoryId': '7',
-                      'categoryName': 'મિલકત / બોન્ડ / FD રોકાણ',
-                      'categoryEffect': 'assetIncrease',
-                      'categoryColor': Colors.teal.toARGB32(),
-                      'accountId': selectedAccId,
-                      'accountName': acc['name'],
-                    });
+                  if (deductInitialNow || existingItem != null) {
+                    _syncInvestmentToDailyTransaction(
+                      linkedInvestmentId: id,
+                      title: "$schemeType રોકાણ: ${titleCtrl.text.trim()} (${issuerCtrl.text.trim()})",
+                      amount: pAmt,
+                      date: startDate,
+                      categoryId: '7',
+                      categoryName: _t('મિલકત / બોન્ડ / FD રોકાણ', 'Assets / Bond / FD Investment'),
+                      categoryColor: Colors.teal.toARGB32(),
+                      accountId: selectedAccId,
+                    );
                   }
 
                   _processFixedIncomeSchedules();
@@ -7049,21 +8061,17 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                     'date': pickedDate.toIso8601String(),
                   });
 
-                  if (existingItem == null && deductFromAccount && selectedAccId.isNotEmpty) {
-                    final txId = "tx_bullion_${DateTime.now().millisecondsSinceEpoch}";
-                    final acc = accounts.firstWhere((a) => a['id'].toString() == selectedAccId);
-                    transactionsBox.put(txId, {
-                      'id': txId,
-                      'title': "ધાતુ ખરીદી ($investmentMode): ${titleCtrl.text.trim().isEmpty ? metalType : titleCtrl.text.trim()} (${weight}g)",
-                      'amount': enteredPrice,
-                      'date': pickedDate.toIso8601String(),
-                      'categoryId': '4',
-                      'categoryName': 'સોનું / ચાંદી રોકાણ',
-                      'categoryEffect': 'assetIncrease',
-                      'categoryColor': Colors.amber.toARGB32(),
-                      'accountId': selectedAccId,
-                      'accountName': acc['name'],
-                    });
+                  if ((deductFromAccount || existingItem != null) && selectedAccId.isNotEmpty) {
+                    _syncInvestmentToDailyTransaction(
+                      linkedInvestmentId: id,
+                      title: "ધાતુ ખરીદી ($investmentMode): ${titleCtrl.text.trim().isEmpty ? metalType : titleCtrl.text.trim()} (${weight}g)",
+                      amount: enteredPrice,
+                      date: pickedDate,
+                      categoryId: '4',
+                      categoryName: _t('સોનું / ચાંદી રોકાણ', 'Gold / Silver Investment'),
+                      categoryColor: Colors.amber.toARGB32(),
+                      accountId: selectedAccId,
+                    );
                   }
 
                   setState(() {});
@@ -7453,21 +8461,17 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   'date': existingAsset != null ? existingAsset['date'] : DateTime.now().toIso8601String(),
                 });
 
-                if (existingAsset == null && deductFromAcc) {
-                  final acc = accounts.firstWhere((a) => a['id'].toString() == selectedAccId);
-                  final txId = "tx_asset_${DateTime.now().millisecondsSinceEpoch}";
-                  transactionsBox.put(txId, {
-                    'id': txId,
-                    'title': "મિલકત ખરીદી ($type): ${titleCtrl.text}",
-                    'amount': val,
-                    'date': DateTime.now().toIso8601String(),
-                    'categoryId': '7',
-                    'categoryName': 'મિલકત / બોન્ડ / FD રોકાણ',
-                    'categoryEffect': 'assetIncrease',
-                    'categoryColor': Colors.teal.toARGB32(),
-                    'accountId': selectedAccId,
-                    'accountName': acc['name'],
-                  });
+                if (deductFromAcc || existingAsset != null) {
+                  _syncInvestmentToDailyTransaction(
+                    linkedInvestmentId: id,
+                    title: "મિલકત ખરીદી ($type): ${titleCtrl.text}",
+                    amount: val,
+                    date: existingAsset != null ? (DateTime.tryParse(existingAsset['date'] ?? '') ?? DateTime.now()) : DateTime.now(),
+                    categoryId: '7',
+                    categoryName: _t('મિલકત / બોન્ડ / FD રોકાણ', 'Assets / Bond / FD Investment'),
+                    categoryColor: Colors.teal.toARGB32(),
+                    accountId: selectedAccId,
+                  );
                 }
 
                 setState(() {});
@@ -7902,17 +8906,17 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Row(
+              Row(
                 children: [
-                  Icon(Icons.settings, color: Colors.teal),
-                  SizedBox(width: 8),
-                  Text('એપ્લિકેશન સેટિંગ્સ', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  const Icon(Icons.settings, color: Colors.teal),
+                  const SizedBox(width: 8),
+                  Text(_t('એપ્લિકેશન સેટિંગ્સ', 'Application Settings'), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                 ],
               ),
               const Divider(),
               ListTile(
                 leading: const Icon(Icons.backup, color: Colors.teal),
-                title: const Text('ઇન્ટરનલ મેમરીમાં બેકઅપ અને રિસ્ટોર', style: TextStyle(fontWeight: FontWeight.bold)),
+                title: Text(_t('ઇન્ટરનલ મેમરીમાં બેકઅપ અને રિસ્ટોર', 'Internal Storage Backup & Restore'), style: const TextStyle(fontWeight: FontWeight.bold)),
                 subtitle: const Text('દર વખતે અલગ નામથી બેકઅપ સેવ કરો અને રિસ્ટોર કરો'),
                 onTap: () {
                   Navigator.pop(ctx);
@@ -7921,7 +8925,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
               ),
               ListTile(
                 leading: Icon(Icons.color_lens, color: appSeedColor.value),
-                title: const Text('એપ્લિકેશન થીમ કલર બદલો'),
+                title: Text(_t('એપ્લિકેશન થીમ કલર બદલો', 'Change App Theme Color')),
                 subtitle: const Text('તમારી પસંદગીનો રંગ પસંદ કરો'),
                 onTap: () {
                   Navigator.pop(ctx);
@@ -7930,7 +8934,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
               ),
               ListTile(
                 leading: const Icon(Icons.wallpaper, color: Colors.purple),
-                title: const Text('ગેલેરીમાંથી ફોટો બેકગ્રાઉન્ડમાં સેટ કરો'),
+                title: Text(_t('ગેલેરીમાંથી ફોટો બેકગ્રાઉન્ડમાં સેટ કરો', 'Set Background Photo from Gallery')),
                 subtitle: Text(appBackgroundImage.value != null ? 'બેકગ્રાઉન્ડ ફોટો સક્રિય છે' : 'કોઈ ફોટો સેટ કરેલ નથી'),
                 trailing: appBackgroundImage.value != null
                     ? IconButton(
@@ -7951,7 +8955,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
               ),
               ListTile(
                 leading: const Icon(Icons.title, color: Colors.blue),
-                title: const Text('પ્રથમ સ્ક્રીનનું શીર્ષક બદલો'),
+                title: Text(_t('પ્રથમ સ્ક્રીનનું શીર્ષક બદલો', 'Change Home Screen Title')),
                 subtitle: Text('હાલનું શીર્ષક: $appTitle'),
                 onTap: () {
                   Navigator.pop(ctx);
@@ -7960,7 +8964,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
               ),
               ListTile(
                 leading: const Icon(Icons.category, color: Colors.orange),
-                title: const Text('કેટેગરી મેનેજર (સુધારો / પ્રકાર બદલો)'),
+                title: Text(_t('કેટેગરી મેનેજર (સુધારો / પ્રકાર બદલો)', 'Category Manager (Edit / Change Type)')),
                 subtitle: const Text('ખર્ચ, આવક કે રોકાણ પ્રકાર બદલો અને નવી ઉમેરો'),
                 onTap: () {
                   Navigator.pop(ctx);
@@ -7969,7 +8973,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
               ),
               ListTile(
                 leading: const Icon(Icons.account_balance, color: Colors.green),
-                title: const Text('બેંક અને ક્રેડિટ કાર્ડ ખાતાઓ સુધારો'),
+                title: Text(_t('બેંક અને ક્રેડિટ કાર્ડ ખાતાઓ સુધારો', 'Manage Bank & Credit Card Accounts')),
                 subtitle: const Text('બેંક નામ, બ્રાન્ચ, પ્રકાર, વ્યાજ દર, કાર્ડ લિમિટ અને વોર્નિંગ'),
                 onTap: () {
                   Navigator.pop(ctx);
@@ -7978,7 +8982,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
               ),
               ListTile(
                 leading: const Icon(Icons.notifications_active, color: Colors.indigo),
-                title: const Text('ઓટો-પે / SIP / ક્રેડિટ કાર્ડ / વીમા રીમાઇન્ડર'),
+                title: Text(_t('ઓટો-પે / SIP / ક્રેડિટ કાર્ડ / વીમા રીમાઇન્ડર', 'Auto-Pay / SIP / Credit Card / Insurance Reminders')),
                 subtitle: const Text('તારીખ, સમય, રીંગટોન અને મોબાઇલ ફ્લેશ મેસેજ સેટિંગ્સ'),
                 onTap: () {
                   Navigator.pop(ctx);
@@ -8028,7 +9032,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
               ),
               ListTile(
                 leading: Icon(appThemeMode.value == ThemeMode.dark ? Icons.dark_mode : Icons.light_mode, color: Colors.amber),
-                title: const Text('લાઇટ / ડાર્ક મોડ'),
+                title: Text(_t('લાઇટ / ડાર્ક મોડ', 'Light / Dark Mode')),
                 trailing: Switch(
                   value: appThemeMode.value == ThemeMode.dark,
                   onChanged: (val) {
@@ -8039,50 +9043,929 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                 ),
               ),
               ListTile(
-                leading: const Icon(Icons.picture_as_pdf, color: Colors.red),
-                title: const Text('સંપૂર્ણ હિસાબ એક્સપોર્ટ (PDF રિપોર્ટ)'),
-                onTap: () async {
+                leading: const Icon(Icons.language, color: Colors.blue),
+                title: Text(_t('એપ્લિકેશનની ભાષા બદલો (ગુજરાતી / English)', 'App Language (Gujarati / English)'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                subtitle: Text(isEn ? 'Current: English (Tap to switch to ગુજરાતી)' : 'હાલની ભાષા: ગુજરાતી (English કરવા માટે ક્લિક કરો)'),
+                trailing: SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(value: 'gu', label: Text('ગુજરાતી', style: TextStyle(fontSize: 11))),
+                    ButtonSegment(value: 'en', label: Text('English', style: TextStyle(fontSize: 11))),
+                  ],
+                  selected: {appLanguage.value},
+                  onSelectionChanged: (s) {
+                    appLanguage.value = s.first;
+                    settingsBox.put('appLanguage', s.first);
+                    Navigator.pop(ctx);
+                    setState(() {});
+                  },
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.record_voice_over, color: Colors.deepPurple),
+                title: Text(_t('વોઇસ કમાન્ડ અને સ્પીકર પ્રોફાઇલ સેટિંગ્સ', 'Voice Commands & Speaker Profile'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                subtitle: Text(_t('ચોક્કસ વ્યક્તિનો અવાજ સેટ કરો અને વોઇસ કમાન્ડથી એપ ચલાવો', 'Configure authorized speaker voice & run app by voice')),
+                onTap: () {
                   Navigator.pop(ctx);
-                  final inc = _calculateTotal('incomeCredit');
-                  final exp = _calculateTotal('expenseDebit') + _calculateTotal('loanRepay');
-                  final inv = _calculateTotal('assetIncrease');
-                  await ExportService.exportToPDF(
-                    filteredTransactions,
-                    inc,
-                    exp,
-                    inv,
-                    inc - (exp + inv),
-                    selectedFilter.name.toUpperCase(),
-                  );
+                  _openVoiceProfileSettingsDialog();
                 },
               ),
               ListTile(
-                leading: const Icon(Icons.table_chart, color: Colors.green),
-                title: const Text('સંપૂર્ણ હિસાબ એક્સપોર્ટ (Excel અને CSV ફાઇલ)'),
-                subtitle: const Text('PDF ની સાથે એક્સેલ (.xls / .csv) માં રિપોર્ટ બનાવો'),
-                onTap: () async {
+                leading: const Icon(Icons.file_download, color: Colors.teal),
+                title: Text(_t('સંપૂર્ણ હિસાબ એક્સપોર્ટ', 'Full Account Export'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                subtitle: Text(_t('PDF, Excel/CSV, ખર્ચ/આવક/રોકાણ, SIP અને ફાઇનાન્સિયલ પ્લાનિંગ રિપોર્ટ્સ', 'PDF, Excel/CSV, Filtered, SIP & Financial Planning Reports')),
+                trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                onTap: () {
                   Navigator.pop(ctx);
-                  await _exportReportToExcelFile();
+                  _openFullExportPage();
                 },
               ),
-              ListTile(
-                leading: const Icon(Icons.done_all, color: Colors.teal),
-                title: const Text('PDF + Excel બંને રિપોર્ટ એકસાથે બનાવો'),
-                onTap: () async {
-                  Navigator.pop(ctx);
-                  await _exportReportToExcelFile();
-                  final inc = _calculateTotal('incomeCredit');
-                  final exp = _calculateTotal('expenseDebit') + _calculateTotal('loanRepay');
-                  final inv = _calculateTotal('assetIncrease');
-                  await ExportService.exportToPDF(
-                    filteredTransactions,
-                    inc,
-                    exp,
-                    inv,
-                    inc - (exp + inv),
-                    selectedFilter.name.toUpperCase(),
-                  );
-                },
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+
+  // =========================================================
+  // (સુધારો ૨) સંપૂર્ણ હિસાબ એક્સપોર્ટ અને વિશ્લેષણ પેજ
+  // =========================================================
+  Future<void> _exportCustomReport({
+    required String reportTitle,
+    required List<DataMap> rows,
+    required String format, // 'pdf', 'excel', 'both'
+    List<Map<String, String>>? extraSummaryLines,
+  }) async {
+    try {
+      final double inc = rows.where((t) => t['categoryEffect'] == 'incomeCredit').fold(0.0, (s, i) => s + ((i['amount'] as num?)?.toDouble() ?? 0.0));
+      final double exp = rows.where((t) => t['categoryEffect'] == 'expenseDebit' || t['categoryEffect'] == 'loanRepay').fold(0.0, (s, i) => s + ((i['amount'] as num?)?.toDouble() ?? 0.0));
+      final double inv = rows.where((t) => t['categoryEffect'] == 'assetIncrease').fold(0.0, (s, i) => s + ((i['amount'] as num?)?.toDouble() ?? 0.0));
+      final double net = inc - (exp + inv);
+
+      String? xlsPath;
+      String? csvPath;
+
+      if (format == 'excel' || format == 'both') {
+        final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+        final dirs = await _getCandidateBackupDirectories();
+        final targetDir = dirs.firstWhere((d) => d.path.contains('/storage/emulated/0'), orElse: () => dirs.first);
+
+        String escapeXml(String s) => s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+
+        final StringBuffer xlsXml = StringBuffer();
+        xlsXml.writeln('<?xml version="1.0" encoding="UTF-8"?>');
+        xlsXml.writeln('<?mso-application progid="Excel.Sheet"?>');
+        xlsXml.writeln('<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">');
+        xlsXml.writeln('<Worksheet ss:Name="Report"><Table>');
+        xlsXml.writeln('<Row><Cell><Data ss:Type="String">${escapeXml("$appTitle - $reportTitle")}</Data></Cell></Row>');
+        xlsXml.writeln('<Row><Cell><Data ss:Type="String">${_t("કુલ આવક", "Total Income")}</Data></Cell><Cell><Data ss:Type="Number">$inc</Data></Cell></Row>');
+        xlsXml.writeln('<Row><Cell><Data ss:Type="String">${_t("કુલ ખર્ચ", "Total Expense")}</Data></Cell><Cell><Data ss:Type="Number">$exp</Data></Cell></Row>');
+        xlsXml.writeln('<Row><Cell><Data ss:Type="String">${_t("કુલ રોકાણ", "Total Investment")}</Data></Cell><Cell><Data ss:Type="Number">$inv</Data></Cell></Row>');
+        xlsXml.writeln('<Row><Cell><Data ss:Type="String">${_t("નેટ બચત", "Net Savings")}</Data></Cell><Cell><Data ss:Type="Number">$net</Data></Cell></Row>');
+
+        final StringBuffer csvBuf = StringBuffer('\uFEFF');
+        csvBuf.writeln('"$appTitle - $reportTitle"');
+
+        if (extraSummaryLines != null && extraSummaryLines.isNotEmpty) {
+          xlsXml.writeln('<Row></Row>');
+          for (final line in extraSummaryLines) {
+            final k = line['label'] ?? '';
+            final v = line['value'] ?? '';
+            xlsXml.writeln('<Row><Cell><Data ss:Type="String">${escapeXml(k)}</Data></Cell><Cell><Data ss:Type="String">${escapeXml(v)}</Data></Cell></Row>');
+            csvBuf.writeln('"${k.replaceAll('"', '""')}","${v.replaceAll('"', '""')}"');
+          }
+        }
+
+        xlsXml.writeln('<Row></Row>');
+        xlsXml.writeln('<Row><Cell><Data ss:Type="String">${_t("તારીખ", "Date")}</Data></Cell><Cell><Data ss:Type="String">${_t("વિગત / શીર્ષક", "Title / Details")}</Data></Cell><Cell><Data ss:Type="String">${_t("કેટેગરી", "Category")}</Data></Cell><Cell><Data ss:Type="String">${_t("પ્રકાર", "Type")}</Data></Cell><Cell><Data ss:Type="String">${_t("ખાતું / નોંધ", "Account / Notes")}</Data></Cell><Cell><Data ss:Type="String">${_t("રકમ (₹)", "Amount (₹)")}</Data></Cell></Row>');
+        csvBuf.writeln('${_t("તારીખ,વિગત / શીર્ષક,કેટેગરી,પ્રકાર,ખાતું / નોંધ,રકમ (₹)", "Date,Title / Details,Category,Type,Account / Notes,Amount (₹)")}');
+
+        for (final tx in rows) {
+          final parsedDt = DateTime.tryParse((tx['date'] ?? '').toString());
+          final dt = parsedDt != null ? DateFormat('dd/MM/yyyy').format(parsedDt) : (tx['date'] ?? '').toString();
+          final title = (tx['title'] ?? '').toString();
+          final cat = (tx['categoryName'] ?? '').toString();
+          final eff = tx['categoryEffect'] == 'incomeCredit'
+              ? _t('આવક', 'Income')
+              : (tx['categoryEffect'] == 'assetIncrease' ? _t('રોકાણ', 'Investment') : _t('ખર્ચ / પ્લાન', 'Expense / Plan'));
+          final acc = (tx['accountName'] ?? '').toString();
+          final amt = ((tx['amount'] as num?)?.toDouble() ?? 0.0);
+
+          xlsXml.writeln(
+            '<Row>'
+            '<Cell><Data ss:Type="String">${escapeXml(dt)}</Data></Cell>'
+            '<Cell><Data ss:Type="String">${escapeXml(title)}</Data></Cell>'
+            '<Cell><Data ss:Type="String">${escapeXml(cat)}</Data></Cell>'
+            '<Cell><Data ss:Type="String">${escapeXml(eff)}</Data></Cell>'
+            '<Cell><Data ss:Type="String">${escapeXml(acc)}</Data></Cell>'
+            '<Cell><Data ss:Type="Number">$amt</Data></Cell>'
+            '</Row>',
+          );
+          csvBuf.writeln('"$dt","${title.replaceAll('"', '""')}","${cat.replaceAll('"', '""')}","${eff.replaceAll('"', '""')}","${acc.replaceAll('"', '""')}",$amt');
+        }
+
+        xlsXml.writeln('</Table></Worksheet></Workbook>');
+        final safeSlug = reportTitle.replaceAll(RegExp(r'[^a-zA-Z0-9_]'), '_').replaceAll(RegExp(r'_+'), '_');
+        final xlsFile = File('${targetDir.path}/Report_${safeSlug}_$timestamp.xls');
+        final csvFile = File('${targetDir.path}/Report_${safeSlug}_$timestamp.csv');
+        await xlsFile.writeAsString(xlsXml.toString(), flush: true);
+        await csvFile.writeAsString(csvBuf.toString(), flush: true);
+        xlsPath = xlsFile.path;
+        csvPath = csvFile.path;
+      }
+
+      if (format == 'pdf' || format == 'both') {
+        await ExportService.exportToPDF(rows, inc, exp, inv, net, reportTitle);
+      }
+
+      if (mounted && xlsPath != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${_t("✅ રિપોર્ટ સેવ થઈ ગયો", "✅ Report exported")}: $xlsPath'),
+            backgroundColor: Colors.teal,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${_t("એક્સપોર્ટ ભૂલ", "Export error")}: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  List<DataMap> _buildSipPortfolioRows(double expectedReturnPct, int years) {
+    final List<DataMap> sipRows = [];
+    final int months = years * 12;
+
+    // ૧. MF SIPs
+    for (final raw in mfInvestmentsBox.values) {
+      final m = Map<dynamic, dynamic>.from(raw);
+      if (m['investmentMode'] == 'SIP') {
+        final double amt = (m['investedAmount'] as num?)?.toDouble() ?? 0.0;
+        final String freq = (m['sipFrequency'] ?? 'માસિક (Monthly)').toString();
+        final int interval = (m['sipIntervalDays'] as num?)?.toInt() ?? _getIntervalDaysForFrequency(freq);
+        final double monthlyEq = amt * (30.0 / math.max(1, interval));
+        final double futureVal = _calculateFutureValue(currentSaved: 0, monthlySip: monthlyEq, annualReturnPct: expectedReturnPct, months: months);
+        sipRows.add({
+          'date': m['date'] ?? DateTime.now().toIso8601String(),
+          'title': 'MF SIP: ${m['schemeName']} ($freq | ₹${amt.toStringAsFixed(0)}/installment)',
+          'categoryName': 'Mutual Fund SIP',
+          'categoryEffect': 'assetIncrease',
+          'accountName': '$years ${_t("વર્ષે અંદાજિત મૂડી", "yr Projected")} (@${expectedReturnPct.toStringAsFixed(1)}%): ₹${futureVal.toStringAsFixed(0)}',
+          'amount': futureVal,
+        });
+      }
+    }
+
+    // ૨. Stock SIPs
+    for (final raw in stockInvestmentsBox.values) {
+      final s = Map<dynamic, dynamic>.from(raw);
+      if (s['investmentMode'] == 'SIP') {
+        final double amt = (s['totalInvested'] as num?)?.toDouble() ?? 0.0;
+        final String freq = (s['sipFrequency'] ?? 'માસિક (Monthly)').toString();
+        final int interval = (s['sipIntervalDays'] as num?)?.toInt() ?? _getIntervalDaysForFrequency(freq);
+        final double monthlyEq = amt * (30.0 / math.max(1, interval));
+        final double futureVal = _calculateFutureValue(currentSaved: 0, monthlySip: monthlyEq, annualReturnPct: expectedReturnPct, months: months);
+        sipRows.add({
+          'date': s['date'] ?? DateTime.now().toIso8601String(),
+          'title': 'Stock/ETF SIP: ${s['symbol']} ($freq | ₹${amt.toStringAsFixed(0)})',
+          'categoryName': 'Stock / ETF SIP',
+          'categoryEffect': 'assetIncrease',
+          'accountName': '$years ${_t("વર્ષે અંદાજિત મૂડી", "yr Projected")}: ₹${futureVal.toStringAsFixed(0)}',
+          'amount': futureVal,
+        });
+      }
+    }
+
+    // ૩. AutoPay SIPs (જે MF/Stock માં ન હોય)
+    for (final raw in autoPayBox.values) {
+      final a = Map<dynamic, dynamic>.from(raw);
+      if (a['type'] == 'SIP' && a['isActive'] == true) {
+        final String target = (a['toTarget'] ?? '').toString();
+        final bool alreadyListed = sipRows.any((r) => r['title'].toString().contains(target));
+        if (!alreadyListed) {
+          final double amt = (a['amount'] as num?)?.toDouble() ?? 0.0;
+          final String freq = (a['sipFrequency'] ?? 'માસિક (Monthly)').toString();
+          final int interval = (a['sipIntervalDays'] as num?)?.toInt() ?? _getIntervalDaysForFrequency(freq);
+          final double monthlyEq = amt * (30.0 / math.max(1, interval));
+          final double futureVal = _calculateFutureValue(currentSaved: 0, monthlySip: monthlyEq, annualReturnPct: expectedReturnPct, months: months);
+          sipRows.add({
+            'date': DateTime.now().toIso8601String(),
+            'title': 'Scheduled SIP: $target ($freq | ₹${amt.toStringAsFixed(0)})',
+            'categoryName': 'AutoPay SIP',
+            'categoryEffect': 'assetIncrease',
+            'accountName': '$years ${_t("વર્ષે અંદાજિત મૂડી", "yr Projected")}: ₹${futureVal.toStringAsFixed(0)}',
+            'amount': futureVal,
+          });
+        }
+      }
+    }
+    return sipRows;
+  }
+
+  List<DataMap> _buildFinancialPlanningRows({bool futureProjection = false}) {
+    final List<DataMap> planRows = [];
+    for (final raw in goalsBox.values) {
+      final g = Map<dynamic, dynamic>.from(raw);
+      final double target = (g['targetAmount'] as num?)?.toDouble() ?? 0.0;
+      final double saved = (g['savedAmount'] as num?)?.toDouble() ?? 0.0;
+      final double monthly = (g['monthlyContribution'] as num?)?.toDouble() ?? 0.0;
+      final double rate = (g['expectedReturn'] as num?)?.toDouble() ?? 12.0;
+      final DateTime tDate = DateTime.tryParse((g['targetDate'] ?? '').toString()) ?? DateTime.now().add(const Duration(days: 365));
+      final int monthsLeft = math.max(1, ((tDate.difference(DateTime.now()).inDays) / 30.44).round());
+      final double reqSip = _calculateRequiredMonthlySip(math.max(0.0, target - saved), rate, monthsLeft);
+      final double fv = _calculateFutureValue(currentSaved: saved, monthlySip: monthly > 0 ? monthly : reqSip, annualReturnPct: rate, months: monthsLeft);
+
+      planRows.add({
+        'date': tDate.toIso8601String(),
+        'title': '${g['name']} (${g['goalType']})',
+        'categoryName': futureProjection ? _t('ભવિષ્યની મૂડી અંદાજ', 'Future Wealth Projection') : _t('ફાઇનાન્સિયલ પ્લાનિંગ નોંધ', 'Financial Planning Note'),
+        'categoryEffect': 'assetIncrease',
+        'accountName': futureProjection
+            ? '${_t("હાલ", "Saved")}: ₹${saved.toStringAsFixed(0)} | ${_t("માસિક", "Monthly")}: ₹${(monthly > 0 ? monthly : reqSip).toStringAsFixed(0)} @${rate.toStringAsFixed(1)}% | ${_t("પ્લાન", "Plan")}: ${g['investmentPlan'] ?? ""}'
+            : '${_t("લક્ષ્ય", "Target")}: ₹${target.toStringAsFixed(0)} | ${_t("બાકી", "Gap")}: ₹${math.max(0, target - saved).toStringAsFixed(0)} | ${g['investmentPlan'] ?? ""}',
+        'amount': futureProjection ? fv : target,
+      });
+    }
+    return planRows;
+  }
+
+  void _openFullExportPage() {
+    String selectedFormat = 'both'; // pdf, excel, both
+    String scope = 'filtered'; // filtered, allFY, allTime
+    double sipReturnRate = 12.0;
+    int sipHorizonYears = 10;
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (pageCtx) => StatefulBuilder(
+          builder: (pageCtx, setPageState) {
+            List<DataMap> getScopedTx() {
+              if (scope == 'allFY') return entireFYTransactions;
+              if (scope == 'allTime') {
+                final list = transactionsBox.values.map((e) => Map<dynamic, dynamic>.from(e)).toList();
+                list.sort((a, b) => DateTime.parse(b['date']).compareTo(DateTime.parse(a['date'])));
+                return list;
+              }
+              return filteredTransactions;
+            }
+
+            final scopedTx = getScopedTx();
+            final expOnly = scopedTx.where((t) => t['categoryEffect'] == 'expenseDebit' || t['categoryEffect'] == 'loanRepay').toList();
+            final incOnly = scopedTx.where((t) => t['categoryEffect'] == 'incomeCredit').toList();
+            final invOnly = scopedTx.where((t) => t['categoryEffect'] == 'assetIncrease').toList();
+            final sipRows = _buildSipPortfolioRows(sipReturnRate, sipHorizonYears);
+            final planNotes = _buildFinancialPlanningRows(futureProjection: false);
+            final planFuture = _buildFinancialPlanningRows(futureProjection: true);
+
+            final double totalSipCorpus = sipRows.fold(0.0, (s, r) => s + ((r['amount'] as num?)?.toDouble() ?? 0.0));
+            final double totalPlanFuture = planFuture.fold(0.0, (s, r) => s + ((r['amount'] as num?)?.toDouble() ?? 0.0));
+
+            return Scaffold(
+              appBar: AppBar(
+                title: Text(_t('સંપૂર્ણ હિસાબ એક્સપોર્ટ અને વિશ્લેષણ', 'Full Account Export & Analysis')),
+              ),
+              body: SingleChildScrollView(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // વિભાગ ૧: અગાઉના ત્રણેય ઝડપી એક્સપોર્ટ વિકલ્પો
+                    Text(_t('૧. ઝડપી સંપૂર્ણ હિસાબ એક્સપોર્ટ', '1. Quick Full Account Export'), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.teal)),
+                    const SizedBox(height: 6),
+                    Card(
+                      child: Column(
+                        children: [
+                          ListTile(
+                            leading: const Icon(Icons.picture_as_pdf, color: Colors.red),
+                            title: Text(_t('સંપૂર્ણ હિસાબ એક્સપોર્ટ (PDF રિપોર્ટ)', 'Full Account Export (PDF Report)')),
+                            trailing: const Icon(Icons.download),
+                            onTap: () => _exportCustomReport(reportTitle: 'Full_Account_PDF', rows: scopedTx, format: 'pdf'),
+                          ),
+                          const Divider(height: 1),
+                          ListTile(
+                            leading: const Icon(Icons.table_chart, color: Colors.green),
+                            title: Text(_t('સંપૂર્ણ હિસાબ એક્સપોર્ટ (Excel અને CSV ફાઇલ)', 'Full Account Export (Excel & CSV)')),
+                            trailing: const Icon(Icons.download),
+                            onTap: () => _exportReportToExcelFile(),
+                          ),
+                          const Divider(height: 1),
+                          ListTile(
+                            leading: const Icon(Icons.done_all, color: Colors.teal),
+                            title: Text(_t('PDF + Excel બંને રિપોર્ટ એકસાથે બનાવો', 'Export Both PDF + Excel Together')),
+                            trailing: const Icon(Icons.download),
+                            onTap: () => _exportCustomReport(reportTitle: 'Full_Account_Combined', rows: scopedTx, format: 'both'),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // વિભાગ ૨: પોતાની શરતો પ્રમાણે એક્સપોર્ટ ફિલ્ટર્સ
+                    Text(_t('૨. પોતાની શરતો પ્રમાણે વિશ્લેષણ અને રિપોર્ટ એક્સપોર્ટ', '2. Custom Condition Analysis & Export'), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.indigo)),
+                    const SizedBox(height: 8),
+                    Card(
+                      color: adaptiveTintBg(Colors.indigo),
+                      child: Padding(
+                        padding: const EdgeInsets.all(10),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: DropdownButtonFormField<String>(
+                                    initialValue: scope,
+                                    isExpanded: true,
+                                    decoration: InputDecoration(labelText: _t('ડેટા સમયગાળો', 'Data Scope'), isDense: true),
+                                    items: [
+                                      DropdownMenuItem(value: 'filtered', child: Text(_t('હાલનું ફિલ્ટર (${selectedFilter.name})', 'Current Filter'))),
+                                      DropdownMenuItem(value: 'allFY', child: Text(_t('આખું FY ($selectedFinancialYearStart-${selectedFinancialYearStart + 1})', 'Full FY'))),
+                                      DropdownMenuItem(value: 'allTime', child: Text(_t('બધા જ વ્યવહારો (All Time)', 'All Transactions'))),
+                                    ],
+                                    onChanged: (v) => setPageState(() => scope = v!),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: DropdownButtonFormField<String>(
+                                    initialValue: selectedFormat,
+                                    isExpanded: true,
+                                    decoration: InputDecoration(labelText: _t('ફાઇલ ફોર્મેટ', 'Export Format'), isDense: true),
+                                    items: [
+                                      DropdownMenuItem(value: 'both', child: Text(_t('PDF + Excel બંને', 'Both PDF + Excel'))),
+                                      const DropdownMenuItem(value: 'pdf', child: Text('PDF')),
+                                      const DropdownMenuItem(value: 'excel', child: Text('Excel (.xls / .csv)')),
+                                    ],
+                                    onChanged: (v) => setPageState(() => selectedFormat = v!),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text('${_t("SIP અંદાજિત વળતર", "SIP Return")}: ${sipReturnRate.toStringAsFixed(1)}%', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                                ),
+                                Expanded(
+                                  child: Slider(
+                                    value: sipReturnRate,
+                                    min: 6,
+                                    max: 20,
+                                    divisions: 28,
+                                    onChanged: (v) => setPageState(() => sipReturnRate = v),
+                                  ),
+                                ),
+                                DropdownButton<int>(
+                                  value: sipHorizonYears,
+                                  items: [5, 10, 15, 20, 25, 30].map((y) => DropdownMenuItem(value: y, child: Text('$y ${_t("વર્ષ", "Yr")}'))).toList(),
+                                  onChanged: (v) => setPageState(() => sipHorizonYears = v!),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+
+                    // ૭ અલગ અલગ વિશ્લેષણ રિપોર્ટ્સ
+                    Card(
+                      child: Column(
+                        children: [
+                          ListTile(
+                            leading: const Icon(Icons.money_off, color: Colors.redAccent),
+                            title: Text(_t('ફક્ત ખર્ચના વ્યવહારો (${expOnly.length})', 'Expenses Only (${expOnly.length})')),
+                            trailing: const Icon(Icons.file_download, color: Colors.redAccent),
+                            onTap: () => _exportCustomReport(reportTitle: 'Expenses_Only_Report', rows: expOnly, format: selectedFormat),
+                          ),
+                          const Divider(height: 1),
+                          ListTile(
+                            leading: const Icon(Icons.attach_money, color: Colors.green),
+                            title: Text(_t('ફક્ત આવકના વ્યવહારો (${incOnly.length})', 'Income Only (${incOnly.length})')),
+                            trailing: const Icon(Icons.file_download, color: Colors.green),
+                            onTap: () => _exportCustomReport(reportTitle: 'Income_Only_Report', rows: incOnly, format: selectedFormat),
+                          ),
+                          const Divider(height: 1),
+                          ListTile(
+                            leading: const Icon(Icons.trending_up, color: Colors.blue),
+                            title: Text(_t('ફક્ત રોકાણના વ્યવહારો (${invOnly.length})', 'Investments Only (${invOnly.length})')),
+                            trailing: const Icon(Icons.file_download, color: Colors.blue),
+                            onTap: () => _exportCustomReport(reportTitle: 'Investments_Only_Report', rows: invOnly, format: selectedFormat),
+                          ),
+                          const Divider(height: 1),
+                          ListTile(
+                            leading: const Icon(Icons.event_note, color: Colors.purple),
+                            title: Text(_t('આવનારા ફાઇનાન્સિયલ પ્લાનિંગની નોંધ (${planNotes.length})', 'Upcoming Financial Planning Notes (${planNotes.length})')),
+                            trailing: const Icon(Icons.file_download, color: Colors.purple),
+                            onTap: () => _exportCustomReport(reportTitle: 'Financial_Planning_Notes', rows: planNotes, format: selectedFormat),
+                          ),
+                          const Divider(height: 1),
+                          ListTile(
+                            leading: const Icon(Icons.savings, color: Colors.deepOrange),
+                            title: Text(_t('ફાઇનાન્સિયલ પ્લાનિંગથી ભવિષ્યની મૂડી રિપોર્ટ', 'Future Wealth from Financial Planning')),
+                            subtitle: Text('${_t("અંદાજિત કુલ મૂડી", "Projected Total")}: ₹${totalPlanFuture.toStringAsFixed(0)}'),
+                            trailing: const Icon(Icons.file_download, color: Colors.deepOrange),
+                            onTap: () => _exportCustomReport(
+                              reportTitle: 'Financial_Planning_Future_Corpus',
+                              rows: planFuture,
+                              format: selectedFormat,
+                              extraSummaryLines: [
+                                {'label': _t('પ્લાનિંગ દ્વારા કુલ ભવિષ્યની મૂડી', 'Total Projected Wealth from Goals'), 'value': '₹${totalPlanFuture.toStringAsFixed(0)}'},
+                              ],
+                            ),
+                          ),
+                          const Divider(height: 1),
+                          ListTile(
+                            leading: const Icon(Icons.autorenew, color: Colors.teal),
+                            title: Text(_t('કુલ SIP યાદી (${sipRows.length}) અને $sipHorizonYears વર્ષે ભવિષ્યની મૂડી', 'All SIPs (${sipRows.length}) & $sipHorizonYears-Yr Future Corpus')),
+                            subtitle: Text('${_t("અંદાજિત SIP મૂડી", "Projected SIP Corpus")} (@${sipReturnRate.toStringAsFixed(1)}%): ₹${totalSipCorpus.toStringAsFixed(0)}'),
+                            trailing: const Icon(Icons.file_download, color: Colors.teal),
+                            onTap: () => _exportCustomReport(
+                              reportTitle: 'All_SIP_Future_Corpus_${sipHorizonYears}Yr',
+                              rows: sipRows,
+                              format: selectedFormat,
+                              extraSummaryLines: [
+                                {'label': _t('કુલ સક્રિય SIP સંખ્યા', 'Total Active SIPs'), 'value': '${sipRows.length}'},
+                                {'label': _t('$sipHorizonYears વર્ષે કુલ અંદાજિત મૂડી (@${sipReturnRate.toStringAsFixed(1)}%)', '$sipHorizonYears-Yr Projected Corpus'), 'value': '₹${totalSipCorpus.toStringAsFixed(0)}'},
+                              ],
+                            ),
+                          ),
+                          const Divider(height: 1),
+                          ListTile(
+                            leading: const Icon(Icons.library_books, color: Colors.indigo),
+                            title: Text(_t('સંયુક્ત માસ્ટર રિપોર્ટ (બધું જ એકસાથે)', 'Combined Master Report (Everything Together)'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                            subtitle: Text(_t('આવક + ખર્ચ + રોકાણ + SIP ભવિષ્યની મૂડી + ફાઇનાન્સિયલ પ્લાનિંગ', 'Income + Expense + Investment + SIP Corpus + Financial Planning')),
+                            trailing: const Icon(Icons.file_download, color: Colors.indigo),
+                            onTap: () {
+                              final combined = <DataMap>[...scopedTx, ...sipRows, ...planFuture];
+                              _exportCustomReport(
+                                reportTitle: 'Combined_Master_Financial_Report',
+                                rows: combined,
+                                format: selectedFormat,
+                                extraSummaryLines: [
+                                  {'label': _t('કુલ સક્રિય SIP', 'Active SIPs'), 'value': '${sipRows.length} (₹${totalSipCorpus.toStringAsFixed(0)} in ${sipHorizonYears}Y)'},
+                                  {'label': _t('ફાઇનાન્સિયલ ગોલ્સ ભવિષ્યની મૂડી', 'Goals Projected Wealth'), 'value': '₹${totalPlanFuture.toStringAsFixed(0)}'},
+                                ],
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  // =========================================================
+  // (સુધારો ૬) સંપૂર્ણ એપ વોઇસ કમાન્ડ અને ચોક્કસ વ્યક્તિ માટે સ્પીકર પ્રોફાઇલ
+  // =========================================================
+  Future<void> _speakFeedback(String text) async {
+    if (settingsBox.get('voiceTtsEnabled', defaultValue: true) != true) return;
+    try {
+      await _nativeChannel.invokeMethod('speakText', {
+        'text': text,
+        'locale': isEn ? 'en-IN' : 'gu-IN',
+      });
+    } catch (_) {}
+  }
+
+  void _openVoiceProfileSettingsDialog() {
+    final ownerCtrl = TextEditingController(text: (settingsBox.get('voiceOwnerName', defaultValue: '') ?? '').toString());
+    final wakeCtrl = TextEditingController(text: (settingsBox.get('voiceWakePhrase', defaultValue: 'હેલો ફાઇનાન્સ') ?? 'હેલો ફાઇનાન્સ').toString());
+    bool strictOwnerOnly = settingsBox.get('voiceStrictOwnerOnly', defaultValue: false) == true;
+    bool ttsEnabled = settingsBox.get('voiceTtsEnabled', defaultValue: true) == true;
+    bool isEnrolled = settingsBox.get('voicePrintEnrolled', defaultValue: false) == true;
+    String enrollStatus = isEnrolled
+        ? _t('✅ વ્યક્તિગત અવાજની ઓળખ (Voice Profile) નોંધાયેલ છે.', '✅ Authorized speaker voice profile is enrolled.')
+        : _t('હજુ સુધી અવાજ નોંધાયેલ નથી.', 'No voice sample enrolled yet.');
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) => AlertDialog(
+          title: Row(
+            children: [
+              const Icon(Icons.record_voice_over, color: Colors.deepPurple),
+              const SizedBox(width: 8),
+              Expanded(child: Text(_t('વોઇસ અને સ્પીકર પ્રોફાઇલ સેટિંગ્સ', 'Voice & Speaker Profile'), style: const TextStyle(fontSize: 16))),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: ownerCtrl,
+                  decoration: InputDecoration(
+                    labelText: _t('અધિકૃત વ્યક્તિનું નામ (Authorized Speaker Name)', 'Authorized Speaker Name'),
+                    prefixIcon: const Icon(Icons.person),
+                  ),
+                ),
+                TextField(
+                  controller: wakeCtrl,
+                  decoration: InputDecoration(
+                    labelText: _t('સિક્રેટ વોઇસ વેક-વર્ડ / પાસફ્રેઝ', 'Secret Wake-Word / Voice Passphrase'),
+                    hintText: _t('દા.ત. હેલો ફાઇનાન્સ / My Finance', 'e.g. Hello Finance'),
+                    prefixIcon: const Icon(Icons.key),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                SwitchListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(_t('માત્ર નોંધાયેલ વ્યક્તિના અવાજ પર જ કમાન્ડ ચલાવો', 'Authorized Speaker Only Mode'), style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold)),
+                  subtitle: Text(_t('અન્ય વ્યક્તિ બોલે તો કમાન્ડ અટકાવી દેશે', 'Blocks voice commands from unrecognized speakers'), style: const TextStyle(fontSize: 11)),
+                  value: strictOwnerOnly,
+                  onChanged: (v) => setDlgState(() => strictOwnerOnly = v),
+                ),
+                SwitchListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(_t('વોઇસ જવાબ (Text-to-Speech) ચાલુ રાખો', 'Enable Spoken Voice Feedback (TTS)'), style: const TextStyle(fontSize: 12.5)),
+                  value: ttsEnabled,
+                  onChanged: (v) => setDlgState(() => ttsEnabled = v),
+                ),
+                const Divider(),
+                Text(enrollStatus, style: TextStyle(fontSize: 11.5, color: isEnrolled ? Colors.green : Colors.orange, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 6),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.mic, color: Colors.deepPurple),
+                    label: Text(_t('🎙️ તમારો અવાજ રેકોર્ડ / કેલિબ્રેટ કરો (Voice Enroll)', '🎙️ Enroll / Calibrate My Voice')),
+                    onPressed: () async {
+                      final ownerName = ownerCtrl.text.trim().isEmpty ? 'Owner' : ownerCtrl.text.trim();
+                      try {
+                        await _nativeChannel.invokeMethod('enrollSpeakerVoice', {
+                          'ownerName': ownerName,
+                          'wakePhrase': wakeCtrl.text.trim(),
+                        });
+                      } catch (_) {}
+                      await settingsBox.put('voicePrintEnrolled', true);
+                      await settingsBox.put('voiceOwnerName', ownerName);
+                      setDlgState(() {
+                        isEnrolled = true;
+                        enrollStatus = _t('✅ $ownerName નો અવાજ પ્રોફાઇલ સફળતાપૂર્વક સેવ થઈ ગયો!', '✅ Voice profile enrolled for $ownerName!');
+                      });
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: Text(_t('રદ', 'Cancel'))),
+            ElevatedButton(
+              onPressed: () {
+                settingsBox.put('voiceOwnerName', ownerCtrl.text.trim());
+                settingsBox.put('voiceWakePhrase', wakeCtrl.text.trim());
+                settingsBox.put('voiceStrictOwnerOnly', strictOwnerOnly);
+                settingsBox.put('voiceTtsEnabled', ttsEnabled);
+                Navigator.pop(ctx);
+                setState(() {});
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text(_t('✅ વોઇસ પ્રોફાઇલ સેવ થઈ ગઈ!', '✅ Voice profile saved!')), backgroundColor: Colors.deepPurple),
+                );
+              },
+              child: Text(_t('સેવ કરો', 'Save')),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<String> _executeVoiceCommand(String rawCommand, {bool speakerVerified = true}) async {
+    final cmd = rawCommand.trim();
+    if (cmd.isEmpty) return _t('કોઈ કમાન્ડ મળ્યો નથી.', 'No command received.');
+
+    final bool strictMode = settingsBox.get('voiceStrictOwnerOnly', defaultValue: false) == true;
+    final String wakePhrase = (settingsBox.get('voiceWakePhrase', defaultValue: '') ?? '').toString().trim().toLowerCase();
+    final String ownerName = (settingsBox.get('voiceOwnerName', defaultValue: 'Owner') ?? 'Owner').toString();
+
+    final lower = cmd.toLowerCase();
+    if (strictMode && !speakerVerified) {
+      if (wakePhrase.isEmpty || !lower.contains(wakePhrase)) {
+        final msg = _t(
+          '🔒 અવાજ ઓળખાયો નથી! માત્ર $ownerName (અથવા વેક-વર્ડ "$wakePhrase") જ કમાન્ડ આપી શકે છે.',
+          '🔒 Speaker not verified! Only $ownerName (or passphrase "$wakePhrase") is authorized.',
+        );
+        await _speakFeedback(msg);
+        return msg;
+      }
+    }
+
+    // ૧. રિંગટોન બંધ કરો
+    if (lower.contains('રિંગટોન બંધ') || lower.contains('stop ringtone') || lower.contains('mute')) {
+      await _stopRingtone();
+      final msg = _t('🔇 રિંગટોન બંધ કરી દીધી છે.', '🔇 Ringtone stopped.');
+      await _speakFeedback(msg);
+      return msg;
+    }
+
+    // ૨. ભાષા બદલો
+    if (lower.contains('english') || lower.contains('અંગ્રેજી')) {
+      appLanguage.value = 'en';
+      settingsBox.put('appLanguage', 'en');
+      setState(() {});
+      await _speakFeedback('Switched app language to English.');
+      return '✅ Switched app language to English.';
+    }
+    if (lower.contains('gujarati') || lower.contains('ગુજરાતી')) {
+      appLanguage.value = 'gu';
+      settingsBox.put('appLanguage', 'gu');
+      setState(() {});
+      await _speakFeedback('એપ્લિકેશનની ભાષા ગુજરાતીમાં બદલી દીધી છે.');
+      return '✅ એપ્લિકેશનની ભાષા ગુજરાતીમાં બદલી દીધી છે.';
+    }
+
+    // ૩. ડાર્ક / લાઇટ મોડ
+    if (lower.contains('dark mode') || lower.contains('ડાર્ક મોડ')) {
+      appThemeMode.value = ThemeMode.dark;
+      settingsBox.put('isDarkMode', true);
+      setState(() {});
+      final msg = _t('🌙 ડાર્ક મોડ ચાલુ કર્યો.', '🌙 Dark mode enabled.');
+      await _speakFeedback(msg);
+      return msg;
+    }
+    if (lower.contains('light mode') || lower.contains('લાઇટ મોડ')) {
+      appThemeMode.value = ThemeMode.light;
+      settingsBox.put('isDarkMode', false);
+      setState(() {});
+      final msg = _t('☀️ લાઇટ મોડ ચાલુ કર્યો.', '☀️ Light mode enabled.');
+      await _speakFeedback(msg);
+      return msg;
+    }
+
+    // ૪. એપ લોક
+    if (lower.contains('lock app') || lower.contains('લોક કરો')) {
+      setState(() => _isAppLocked = true);
+      return _t('🔒 એપ લૉક કરી દીધી.', '🔒 App locked.');
+    }
+
+    // ૫. ક્વેરી (કુલ આવક / ખર્ચ / રોકાણ / બચત)
+    if (lower.contains('કેટલો') || lower.contains('કેટલી') || lower.contains('total') || lower.contains('balance') || lower.contains('summary')) {
+      final inc = _calculateTotal('incomeCredit');
+      final exp = _calculateTotal('expenseDebit') + _calculateTotal('loanRepay');
+      final inv = _calculateTotal('assetIncrease');
+      final net = inc - (exp + inv);
+      String msg;
+      if (lower.contains('ખર્ચ') || lower.contains('expense')) {
+        msg = _t('તમારો કુલ ખર્ચ ₹${exp.toStringAsFixed(0)} છે.', 'Your total expense is ₹${exp.toStringAsFixed(0)}.');
+      } else if (lower.contains('આવક') || lower.contains('income')) {
+        msg = _t('તમારી કુલ આવક ₹${inc.toStringAsFixed(0)} છે.', 'Your total income is ₹${inc.toStringAsFixed(0)}.');
+      } else if (lower.contains('રોકાણ') || lower.contains('investment')) {
+        msg = _t('તમારું કુલ રોકાણ ₹${inv.toStringAsFixed(0)} છે.', 'Your total investment is ₹${inv.toStringAsFixed(0)}.');
+      } else {
+        msg = _t(
+          'આવક ₹${inc.toStringAsFixed(0)}, ખર્ચ ₹${exp.toStringAsFixed(0)}, રોકાણ ₹${inv.toStringAsFixed(0)}, અને નેટ બચત ₹${net.toStringAsFixed(0)} છે.',
+          'Income ₹${inc.toStringAsFixed(0)}, Expense ₹${exp.toStringAsFixed(0)}, Investment ₹${inv.toStringAsFixed(0)}, Net Savings ₹${net.toStringAsFixed(0)}.',
+        );
+      }
+      await _speakFeedback(msg);
+      return msg;
+    }
+
+    // ૬. વ્યવહાર ઉમેરો (સંખ્યા + ખર્ચ / આવક / રોકાણ)
+    final numMatch = RegExp(r'(\d+(?:\.\d+)?)').firstMatch(cmd);
+    if (numMatch != null && (lower.contains('ખર્ચ') || lower.contains('expense') || lower.contains('આવક') || lower.contains('income') || lower.contains('રોકાણ') || lower.contains('invest') || lower.contains('sip') || lower.contains('ઉમેરો') || lower.contains('add'))) {
+      final double amt = double.tryParse(numMatch.group(1)!) ?? 0.0;
+      if (amt > 0) {
+        String effect = 'expenseDebit';
+        String catId = '1';
+        String catName = _t('ઘરખર્ચ (Groceries & Bills)', 'Household & Bills');
+        int catColor = Colors.redAccent.toARGB32();
+        if (lower.contains('આવક') || lower.contains('income') || lower.contains('પગાર') || lower.contains('salary')) {
+          effect = 'incomeCredit';
+          catId = '2';
+          catName = _t('પગાર / ધંધાકીય આવક', 'Salary / Business Income');
+          catColor = Colors.green.toARGB32();
+        } else if (lower.contains('રોકાણ') || lower.contains('invest') || lower.contains('sip') || lower.contains('મ્યુચ્યુઅલ')) {
+          effect = 'assetIncrease';
+          catId = '3';
+          catName = _t('શેરબજાર / મ્યુચ્યુઅલ ફંડ', 'Stocks / Mutual Fund');
+          catColor = Colors.blue.toARGB32();
+        }
+        final acc = accounts.isNotEmpty ? accounts.first : {'id': '1', 'name': _t('બેંક ખાતું', 'Bank Account')};
+        final txId = "voice_tx_${DateTime.now().millisecondsSinceEpoch}";
+        transactionsBox.put(txId, {
+          'id': txId,
+          'title': cmd,
+          'amount': amt,
+          'date': DateTime.now().toIso8601String(),
+          'hasTime': true,
+          'categoryId': catId,
+          'categoryName': catName,
+          'categoryEffect': effect,
+          'categoryColor': catColor,
+          'accountId': acc['id'].toString(),
+          'accountName': acc['name'],
+        });
+        setState(() {});
+        final msg = _t('✅ વોઇસ કમાન્ડથી ₹${amt.toStringAsFixed(0)} ($catName) નોંધાઈ ગયા!', '✅ Added ₹${amt.toStringAsFixed(0)} ($catName) via voice command!');
+        await _speakFeedback(msg);
+        return msg;
+      }
+    }
+
+    // ૭. નેવિગેશન કમાન્ડ્સ
+    if (lower.contains('વિશ્લેષણ') || lower.contains('analysis')) {
+      setState(() => _selectedTabIndex = 1);
+      return _t('📊 નાણાકીય વિશ્લેષણ ટેબ ખોલ્યું.', '📊 Opened Financial Analysis tab.');
+    }
+    if (lower.contains('બજેટ') || lower.contains('budget') || lower.contains('લક્ષ્યાંક') || lower.contains('goal')) {
+      setState(() => _selectedTabIndex = 2);
+      return _t('🎯 બજેટ અને લક્ષ્યાંક ટેબ ખોલ્યું.', '🎯 Opened Budget & Goals tab.');
+    }
+    if (lower.contains('ઇન્વેસ્ટમેન્ટ') || lower.contains('investment') || lower.contains('પોર્ટફોલિયો')) {
+      setState(() => _selectedTabIndex = 3);
+      return _t('📈 ઇન્વેસ્ટમેન્ટ ટેબ ખોલ્યું.', '📈 Opened Investment tab.');
+    }
+    if (lower.contains('દૈનિક') || lower.contains('home') || lower.contains('entry')) {
+      setState(() => _selectedTabIndex = 0);
+      return _t('🏠 દૈનિક એન્ટ્રી ટેબ ખોલ્યું.', '🏠 Opened Daily Entries tab.');
+    }
+    if (lower.contains('એક્સપોર્ટ') || lower.contains('export') || lower.contains('રિપોર્ટ')) {
+      _openFullExportPage();
+      return _t('📄 એક્સપોર્ટ પેજ ખોલ્યું.', '📄 Opened Export page.');
+    }
+    if (lower.contains('રિમાઇન્ડર') || lower.contains('reminder') || lower.contains('autopay')) {
+      _openAutoPayManager();
+      return _t('🔔 ઓટો-પે / રિમાઇન્ડર મેનેજર ખોલ્યું.', '🔔 Opened Auto-Pay / Reminder Manager.');
+    }
+    if (lower.contains('સેટિંગ્સ') || lower.contains('settings')) {
+      _openSettingsDialog();
+      return _t('⚙️ સેટિંગ્સ ખોલ્યું.', '⚙️ Opened Settings.');
+    }
+
+    final fallback = _t(
+      'કમાન્ડ સમજાયો નહીં. ઉદાહરણ: "500 કરિયાણું ખર્ચ ઉમેરો", "કુલ ખર્ચ કેટલો છે", "બજેટ ખોલો", "એક્સપોર્ટ ખોલો".',
+      'Command not recognized. Try: "Add 500 expense groceries", "Total expense", "Open budget", "Open export".',
+    );
+    await _speakFeedback(fallback);
+    return fallback;
+  }
+
+  void _openVoiceCommandSheet() {
+    final cmdCtrl = TextEditingController();
+    final String ownerName = (settingsBox.get('voiceOwnerName', defaultValue: '') ?? '').toString();
+    final bool strictMode = settingsBox.get('voiceStrictOwnerOnly', defaultValue: false) == true;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) => Padding(
+          padding: EdgeInsets.only(left: 16, right: 16, top: 18, bottom: MediaQuery.of(ctx).viewInsets.bottom + 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  CircleAvatar(
+                    backgroundColor: _isListeningVoice ? Colors.red : Colors.deepPurple,
+                    child: const Icon(Icons.mic, color: Colors.white),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(_t('🎙️ વોઇસ કમાન્ડ આસિસ્ટન્ટ', '🎙️ Voice Command Assistant'), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                        Text(
+                          strictMode
+                              ? _t('🔒 અધિકૃત સ્પીકર: ${ownerName.isEmpty ? "સેટ નથી" : ownerName}', '🔒 Authorized Speaker: ${ownerName.isEmpty ? "Not Set" : ownerName}')
+                              : _t('બધા વોઇસ કમાન્ડ સક્રિય છે', 'Voice control active'),
+                          style: TextStyle(fontSize: 11, color: secondaryTextColor),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: _t('સ્પીકર પ્રોફાઇલ સેટિંગ્સ', 'Speaker Profile Settings'),
+                    icon: const Icon(Icons.manage_accounts, color: Colors.deepPurple),
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      _openVoiceProfileSettingsDialog();
+                    },
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Center(
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _isListeningVoice ? Colors.red : Colors.deepPurple,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
+                  ),
+                  icon: Icon(_isListeningVoice ? Icons.hearing : Icons.mic),
+                  label: Text(_isListeningVoice ? _t('સાંભળી રહ્યું છે...', 'Listening...') : _t('બોલવા માટે ટૅપ કરો (Speak Command)', 'Tap to Speak Command')),
+                  onPressed: () async {
+                    setSheetState(() {
+                      _isListeningVoice = true;
+                      _voiceStatusText = _t('🎙️ બોલો...', '🎙️ Listening...');
+                    });
+                    try {
+                      final dynamic result = await _nativeChannel.invokeMethod('startVoiceRecognition', {
+                        'locale': isEn ? 'en-IN' : 'gu-IN',
+                        'strictOwnerOnly': strictMode,
+                        'ownerName': ownerName,
+                      });
+                      String spoken = '';
+                      bool verified = true;
+                      if (result is Map) {
+                        spoken = (result['text'] ?? '').toString();
+                        verified = result['speakerVerified'] != false;
+                      } else if (result is String) {
+                        spoken = result;
+                      }
+                      if (spoken.isNotEmpty) {
+                        cmdCtrl.text = spoken;
+                        final reply = await _executeVoiceCommand(spoken, speakerVerified: verified);
+                        setSheetState(() {
+                          _lastVoiceTranscript = spoken;
+                          _voiceStatusText = reply;
+                        });
+                      } else {
+                        setSheetState(() => _voiceStatusText = _t('અવાજ સંભળાયો નહીં, ફરી પ્રયાસ કરો.', 'No speech detected, try again.'));
+                      }
+                    } catch (_) {
+                      setSheetState(() => _voiceStatusText = _t('નેટિવ માઇક ઉપલબ્ધ ન હોય તો નીચે કીબોર્ડ માઇક વડે બોલો/લખો.', 'Use keyboard mic or type your command below.'));
+                    } finally {
+                      setSheetState(() => _isListeningVoice = false);
+                    }
+                  },
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: cmdCtrl,
+                      decoration: InputDecoration(
+                        isDense: true,
+                        border: const OutlineInputBorder(),
+                        hintText: _t('દા.ત. 500 કરિયાણું ખર્ચ ઉમેરો / બજેટ ખોલો', 'e.g. Add 500 expense groceries / Open budget'),
+                      ),
+                      onSubmitted: (v) async {
+                        final reply = await _executeVoiceCommand(v, speakerVerified: !strictMode);
+                        setSheetState(() => _voiceStatusText = reply);
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  ElevatedButton(
+                    onPressed: () async {
+                      final reply = await _executeVoiceCommand(cmdCtrl.text, speakerVerified: !strictMode);
+                      setSheetState(() => _voiceStatusText = reply);
+                    },
+                    child: Text(_t('ચલાવો', 'Run')),
+                  ),
+                ],
+              ),
+              if (_voiceStatusText.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(_voiceStatusText, style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.teal)),
+                ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 6,
+                runSpacing: 4,
+                children: [
+                  for (final sample in [
+                    _t('કુલ ખર્ચ કેટલો છે', 'Total expense'),
+                    _t('બજેટ ખોલો', 'Open budget'),
+                    _t('ઇન્વેસ્ટમેન્ટ ખોલો', 'Open investment'),
+                    _t('એક્સપોર્ટ ખોલો', 'Open export'),
+                    _t('રિંગટોન બંધ કરો', 'Stop ringtone'),
+                  ])
+                    ActionChip(
+                      label: Text(sample, style: const TextStyle(fontSize: 11)),
+                      onPressed: () async {
+                        cmdCtrl.text = sample;
+                        final reply = await _executeVoiceCommand(sample, speakerVerified: !strictMode);
+                        setSheetState(() => _voiceStatusText = reply);
+                      },
+                    ),
+                ],
               ),
             ],
           ),
@@ -8223,9 +10106,20 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       'ઇમરજન્સી અલર્ટ (Urgent Beep)',
       'સોફ્ટ મેલોડી (Soft Tone)',
     ];
-    String selectedRingtone = existingItem != null && ringtoneOptions.contains(existingItem['ringtoneName'])
+    String selectedRingtone = existingItem != null && existingItem['ringtoneName'] != null
         ? existingItem['ringtoneName'].toString()
         : ringtoneOptions.first;
+    if (!ringtoneOptions.contains(selectedRingtone)) {
+      ringtoneOptions.add(selectedRingtone);
+    }
+    String customRingtonePath = existingItem != null ? (existingItem['customRingtonePath'] ?? '').toString() : '';
+    List<Map<String, dynamic>> sipFreqList = _getSipFrequencyOptions();
+    String sipFrequency = existingItem != null && existingItem['sipFrequency'] != null
+        ? existingItem['sipFrequency'].toString()
+        : sipFreqList.first['name'].toString();
+    if (!sipFreqList.any((f) => f['name'] == sipFrequency)) {
+      sipFreqList.add({'name': sipFrequency, 'days': _getIntervalDaysForFrequency(sipFrequency)});
+    }
     bool enableFlashMessage = existingItem != null ? (existingItem['enableFlashMessage'] ?? true) : true;
     DateTime? specificReminderDate = existingItem != null && existingItem['specificReminderDate'] != null
         ? DateTime.tryParse(existingItem['specificReminderDate'].toString())
@@ -8340,18 +10234,97 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   children: [
                     Expanded(
                       child: DropdownButtonFormField<String>(
-                        initialValue: selectedRingtone,
+                        initialValue: sipFrequency,
                         isExpanded: true,
-                        decoration: const InputDecoration(labelText: 'રીમાઇન્ડર રિંગટોન પસંદ કરો'),
-                        items: ringtoneOptions.map((r) => DropdownMenuItem(value: r, child: Text(r, style: const TextStyle(fontSize: 11.5)))).toList(),
-                        onChanged: (v) => setDlgState(() => selectedRingtone = v!),
+                        decoration: InputDecoration(labelText: _t('ફ્રીક્વન્સી (માસિક/અઠવાડિક/15 દિવસ/દૈનિક)', 'Frequency')),
+                        items: sipFreqList.map((f) => DropdownMenuItem(value: f['name'].toString(), child: Text(f['name'].toString(), style: const TextStyle(fontSize: 11.5)))).toList(),
+                        onChanged: (v) => setDlgState(() => sipFrequency = v!),
                       ),
                     ),
                     IconButton(
-                      icon: const Icon(Icons.volume_up, color: Colors.teal),
-                      tooltip: 'રિંગટોન સાંભળો',
-                      onPressed: () => _playSelectedRingtone(selectedRingtone),
+                      icon: const Icon(Icons.add_circle, color: Colors.teal),
+                      tooltip: _t('નવી ફ્રીક્વન્સી ઉમેરો', 'Add Custom Frequency'),
+                      onPressed: () async {
+                        final added = await _openAddCustomSipFrequencyDialog();
+                        if (added != null) {
+                          setDlgState(() {
+                            sipFreqList = _getSipFrequencyOptions();
+                            sipFrequency = added;
+                          });
+                        }
+                      },
                     ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        initialValue: selectedRingtone,
+                        isExpanded: true,
+                        decoration: InputDecoration(labelText: _t('રીમાઇન્ડર રિંગટોન પસંદ કરો', 'Select Reminder Ringtone')),
+                        items: ringtoneOptions.map((r) => DropdownMenuItem(value: r, child: Text(r, style: const TextStyle(fontSize: 11.5)))).toList(),
+                        onChanged: (v) {
+                          _stopRingtone();
+                          setDlgState(() => selectedRingtone = v!);
+                        },
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.play_arrow, color: Colors.teal),
+                      tooltip: _t('રિંગટોન સાંભળો', 'Play Ringtone'),
+                      onPressed: () => _playSelectedRingtone(selectedRingtone, customPath: customRingtonePath),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.stop_circle, color: Colors.redAccent),
+                      tooltip: _t('રિંગટોન બંધ કરો', 'Stop Ringtone'),
+                      onPressed: () => _stopRingtone(),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.audio_file, size: 16, color: Colors.indigo),
+                        label: Text(
+                          customRingtonePath.isNotEmpty
+                              ? '🎵 ${customRingtonePath.split('/').last}'
+                              : _t('ઇન્ટરનલ મેમરીમાંથી ઓડિયો ફાઇલ પસંદ કરો', 'Pick Audio File from Internal Storage'),
+                          style: const TextStyle(fontSize: 11),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        onPressed: () async {
+                          await _stopRingtone();
+                          final picked = await _pickAudioFileFromInternalMemory();
+                          if (picked != null) {
+                            setDlgState(() {
+                              customRingtonePath = picked['path']!;
+                              final label = 'કસ્ટમ: ${picked['name']}';
+                              if (!ringtoneOptions.contains(label)) {
+                                ringtoneOptions.add(label);
+                              }
+                              selectedRingtone = label;
+                            });
+                          }
+                        },
+                      ),
+                    ),
+                    if (customRingtonePath.isNotEmpty)
+                      IconButton(
+                        icon: const Icon(Icons.clear, size: 18, color: Colors.red),
+                        tooltip: _t('કસ્ટમ ઓડિયો દૂર કરો', 'Clear Custom Audio'),
+                        onPressed: () {
+                          _stopRingtone();
+                          setDlgState(() {
+                            customRingtonePath = '';
+                            selectedRingtone = ringtoneOptions.first;
+                          });
+                        },
+                      ),
                   ],
                 ),
                 SwitchListTile(
@@ -8389,7 +10362,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             ),
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('રદ')),
+            TextButton(onPressed: () { _stopRingtone(); Navigator.pop(ctx); }, child: Text(_t('રદ', 'Cancel'))),
             ElevatedButton(
               onPressed: () {
                 final id = existingItem != null ? existingItem['id'] : "auto_${DateTime.now().millisecondsSinceEpoch}";
@@ -8407,6 +10380,9 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   'reminderHour': selectedReminderTime.hour,
                   'reminderMinute': selectedReminderTime.minute,
                   'ringtoneName': selectedRingtone,
+                  'customRingtonePath': customRingtonePath,
+                  'sipFrequency': sipFrequency,
+                  'sipIntervalDays': _getIntervalDaysForFrequency(sipFrequency),
                   'enableFlashMessage': enableFlashMessage,
                   'specificReminderDate': specificReminderDate?.toIso8601String(),
                   'isActive': true,
@@ -8418,11 +10394,12 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   _nativeChannel.invokeMethod('scheduleFlashReminder', savedMap);
                 } catch (_) {}
                 _processAutoPayAndSIP();
+                _stopRingtone();
                 if (onSaved != null) onSaved();
                 Navigator.pop(ctx);
                 setState(() {});
               },
-              child: const Text('સેવ કરો'),
+              child: Text(_t('સેવ કરો', 'Save')),
             ),
           ],
         ),
@@ -8923,45 +10900,164 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   }
 
   void _openCategoryBudgetDialog() {
+    final refIncCtrl = TextEditingController(text: _getBudgetReferenceIncome().toStringAsFixed(0));
+
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('$budgetPeriod બજેટ લક્ષ્યાંક ગોઠવો'),
-        content: SizedBox(
-          width: double.maxFinite,
-          height: 340,
-          child: ListView.builder(
-            itemCount: categories.length,
-            itemBuilder: (context, i) {
-              final cat = categories[i];
-              final budgetKey = 'budget_${budgetPeriod}_${cat['id']}';
-              final currentTarget = (budgetBox.get(budgetKey, defaultValue: 0.0) as num).toDouble();
-              final ctrl = TextEditingController(text: currentTarget > 0 ? currentTarget.toStringAsFixed(0) : '');
-              return ListTile(
-                dense: true,
-                title: Text(cat['name']),
-                trailing: SizedBox(
-                  width: 95,
-                  child: TextField(
-                    controller: ctrl,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(hintText: '₹ 0', isDense: true, border: OutlineInputBorder()),
-                    onChanged: (val) => budgetBox.put(budgetKey, double.tryParse(val) ?? 0.0),
-                  ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) {
+          final double refInc = double.tryParse(refIncCtrl.text) ?? _getBudgetReferenceIncome();
+          return AlertDialog(
+            title: Row(
+              children: [
+                Expanded(child: Text('$budgetPeriod ${_t("બજેટ લક્ષ્યાંક ગોઠવો (₹ અને %)", "Budget Targets (₹ & %)")}', style: const TextStyle(fontSize: 15.5))),
+                IconButton(
+                  tooltip: _t('કેટેગરી ઉમેરો / સુધારો', 'Add / Edit Categories'),
+                  icon: const Icon(Icons.edit_note, color: Colors.teal),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    _openCategoryManager();
+                  },
                 ),
-              );
-            },
-          ),
-        ),
-        actions: [
-          ElevatedButton(
-            onPressed: () {
-              setState(() {});
-              Navigator.pop(ctx);
-            },
-            child: const Text('સેવ કરો'),
-          ),
-        ],
+              ],
+            ),
+            content: SizedBox(
+              width: double.maxFinite,
+              height: 410,
+              child: Column(
+                children: [
+                  TextField(
+                    controller: refIncCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      isDense: true,
+                      border: const OutlineInputBorder(),
+                      labelText: _t('આધાર આવક (₹) - % ગણતરી માટે', 'Base Income (₹) - for % calculation'),
+                      prefixIcon: const Icon(Icons.currency_rupee, size: 18),
+                    ),
+                    onChanged: (v) {
+                      final parsed = double.tryParse(v) ?? 0.0;
+                      if (parsed > 0) {
+                        budgetBox.put('refIncome_$budgetPeriod', parsed);
+                        setDlgState(() {});
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: ListView.builder(
+                      itemCount: categories.length,
+                      itemBuilder: (context, i) {
+                        final cat = categories[i];
+                        final budgetKey = 'budget_${budgetPeriod}_${cat['id']}';
+                        final pctKey = 'budgetPct_${budgetPeriod}_${cat['id']}';
+                        final modeKey = 'budgetMode_${budgetPeriod}_${cat['id']}';
+
+                        String mode = (budgetBox.get(modeKey, defaultValue: 'rs') ?? 'rs').toString();
+                        double rsVal = (budgetBox.get(budgetKey, defaultValue: 0.0) as num).toDouble();
+                        double pctVal = (budgetBox.get(pctKey, defaultValue: 0.0) as num).toDouble();
+                        if (mode == 'pct' && pctVal > 0) {
+                          rsVal = (refInc * pctVal) / 100.0;
+                        } else if (rsVal > 0 && refInc > 0) {
+                          pctVal = (rsVal / refInc) * 100.0;
+                        }
+
+                        final ctrl = TextEditingController(
+                          text: mode == 'pct'
+                              ? (pctVal > 0 ? pctVal.toStringAsFixed(1) : '')
+                              : (rsVal > 0 ? rsVal.toStringAsFixed(0) : ''),
+                        );
+
+                        return Card(
+                          margin: const EdgeInsets.symmetric(vertical: 3),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(cat['name'], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
+                                    ),
+                                    ChoiceChip(
+                                      label: const Text('₹', style: TextStyle(fontSize: 11)),
+                                      selected: mode == 'rs',
+                                      visualDensity: VisualDensity.compact,
+                                      onSelected: (_) {
+                                        budgetBox.put(modeKey, 'rs');
+                                        setDlgState(() {});
+                                      },
+                                    ),
+                                    const SizedBox(width: 4),
+                                    ChoiceChip(
+                                      label: const Text('%', style: TextStyle(fontSize: 11)),
+                                      selected: mode == 'pct',
+                                      visualDensity: VisualDensity.compact,
+                                      onSelected: (_) {
+                                        budgetBox.put(modeKey, 'pct');
+                                        setDlgState(() {});
+                                      },
+                                    ),
+                                    const SizedBox(width: 6),
+                                    SizedBox(
+                                      width: 82,
+                                      child: TextField(
+                                        controller: ctrl,
+                                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                        decoration: InputDecoration(
+                                          hintText: mode == 'pct' ? '0 %' : '₹ 0',
+                                          isDense: true,
+                                          border: const OutlineInputBorder(),
+                                          contentPadding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                                        ),
+                                        onChanged: (val) {
+                                          final numVal = double.tryParse(val) ?? 0.0;
+                                          if (mode == 'pct') {
+                                            budgetBox.put(pctKey, numVal);
+                                            budgetBox.put(budgetKey, (refInc * numVal) / 100.0);
+                                          } else {
+                                            budgetBox.put(budgetKey, numVal);
+                                            budgetBox.put(pctKey, refInc > 0 ? (numVal / refInc) * 100.0 : 0.0);
+                                          }
+                                        },
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                Text(
+                                  '${_t("સમકક્ષ", "Equivalent")}: ₹${rsVal.toStringAsFixed(0)}  •  ${pctVal.toStringAsFixed(1)}%',
+                                  style: TextStyle(fontSize: 10.5, color: secondaryTextColor),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton.icon(
+                icon: const Icon(Icons.category, size: 16),
+                label: Text(_t('કેટેગરી સુધારો', 'Edit Categories')),
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  _openCategoryManager();
+                },
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  setState(() {});
+                  Navigator.pop(ctx);
+                },
+                child: Text(_t('સેવ કરો', 'Save')),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -9245,8 +11341,13 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
         ),
         actions: [
           IconButton(
+            icon: const Icon(Icons.mic, color: Colors.deepPurple),
+            tooltip: _t('વોઇસ કમાન્ડ', 'Voice Command'),
+            onPressed: _openVoiceCommandSheet,
+          ),
+          IconButton(
             icon: const Icon(Icons.backup, color: Colors.teal),
-            tooltip: 'બેકઅપ અને રિસ્ટોર',
+            tooltip: _t('બેકઅપ અને રિસ્ટોર', 'Backup & Restore'),
             onPressed: _openBackupAndRestoreDialog,
           ),
           IconButton(
@@ -9272,17 +11373,17 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
               foregroundColor: Colors.white,
               onPressed: () => _openTransactionDialog(),
               icon: const Icon(Icons.add),
-              label: const Text('હિસાબ નોંધો'),
+              label: Text(_t('હિસાબ નોંધો', 'Add Entry')),
             )
           : null,
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedTabIndex,
         onDestinationSelected: (idx) => setState(() => _selectedTabIndex = idx),
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.receipt_long), label: 'દૈનિક એન્ટ્રી'),
-          NavigationDestination(icon: Icon(Icons.analytics), label: 'નાણાકીય વિશ્લેષણ'),
-          NavigationDestination(icon: Icon(Icons.track_changes), label: 'બજેટ લક્ષ્યાંક'),
-          NavigationDestination(icon: Icon(Icons.trending_up), label: 'ઇન્વેસ્ટમેન્ટ'),
+        destinations: [
+          NavigationDestination(icon: const Icon(Icons.receipt_long), label: _t('દૈનિક એન્ટ્રી', 'Daily')),
+          NavigationDestination(icon: const Icon(Icons.analytics), label: _t('નાણાકીય વિશ્લેષણ', 'Analysis')),
+          NavigationDestination(icon: const Icon(Icons.track_changes), label: _t('બજેટ લક્ષ્યાંક', 'Budget')),
+          NavigationDestination(icon: const Icon(Icons.trending_up), label: _t('ઇન્વેસ્ટમેન્ટ', 'Invest')),
         ],
       ),
       body: ValueListenableBuilder<String?>(
@@ -9334,14 +11435,14 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                           DropdownButton<TimeFilter>(
                             value: selectedFilter,
                             underline: const SizedBox(),
-                            items: const [
-                              DropdownMenuItem(value: TimeFilter.daily, child: Text('દૈનિક')),
-                              DropdownMenuItem(value: TimeFilter.monthly, child: Text('માસિક')),
-                              DropdownMenuItem(value: TimeFilter.quarterly, child: Text('ત્રિમાસિક')),
-                              DropdownMenuItem(value: TimeFilter.halfYearly, child: Text('છ માસિક')),
-                              DropdownMenuItem(value: TimeFilter.yearly, child: Text('વાર્ષિક')),
-                              DropdownMenuItem(value: TimeFilter.allFY, child: Text('આખું FY')),
-                              DropdownMenuItem(value: TimeFilter.custom, child: Text('ચોક્કસ તારીખ')),
+                            items: [
+                              DropdownMenuItem(value: TimeFilter.daily, child: Text(_t('દૈનિક', 'Daily'))),
+                              DropdownMenuItem(value: TimeFilter.monthly, child: Text(_t('માસિક', 'Monthly'))),
+                              DropdownMenuItem(value: TimeFilter.quarterly, child: Text(_t('ત્રિમાસિક', 'Quarterly'))),
+                              DropdownMenuItem(value: TimeFilter.halfYearly, child: Text(_t('છ માસિક', 'Half-Yearly'))),
+                              DropdownMenuItem(value: TimeFilter.yearly, child: Text(_t('વાર્ષિક', 'Yearly'))),
+                              DropdownMenuItem(value: TimeFilter.allFY, child: Text(_t('આખું FY', 'Full FY'))),
+                              DropdownMenuItem(value: TimeFilter.custom, child: Text(_t('ચોક્કસ તારીખ', 'Specific Date'))),
                             ],
                             onChanged: (val) {
                               if (val != null) setState(() => selectedFilter = val);
@@ -9351,14 +11452,104 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                       ),
                     ),
                   ),
+                  // (સુધારો ૧) પ્રથમ ટેબ / ચોક્કસ તારીખ પસંદગી અને સોર્ટિંગ બાર
+                  if (selectedFilter == TimeFilter.custom)
+                    Card(
+                      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+                      color: adaptiveTintBg(Colors.teal),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                        child: Wrap(
+                          spacing: 6,
+                          runSpacing: 4,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            OutlinedButton.icon(
+                              style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
+                              icon: const Icon(Icons.date_range, size: 15),
+                              label: Text('${_t("થી", "From")}: ${DateFormat("dd/MM/yyyy").format(customStartDate)}', style: const TextStyle(fontSize: 11.5)),
+                              onPressed: () async {
+                                final d = await showDatePicker(
+                                  context: context,
+                                  initialDate: _clampDate1800To2100(customStartDate),
+                                  firstDate: DateTime(1800, 1, 1),
+                                  lastDate: DateTime(2100, 12, 31),
+                                );
+                                if (d != null) {
+                                  setState(() {
+                                    customStartDate = d;
+                                    if (customEndDate.isBefore(customStartDate)) {
+                                      customEndDate = customStartDate;
+                                    }
+                                  });
+                                }
+                              },
+                            ),
+                            OutlinedButton.icon(
+                              style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
+                              icon: const Icon(Icons.event, size: 15),
+                              label: Text('${_t("સુધી", "To")}: ${DateFormat("dd/MM/yyyy").format(customEndDate)}', style: const TextStyle(fontSize: 11.5)),
+                              onPressed: () async {
+                                final d = await showDatePicker(
+                                  context: context,
+                                  initialDate: _clampDate1800To2100(customEndDate),
+                                  firstDate: DateTime(1800, 1, 1),
+                                  lastDate: DateTime(2100, 12, 31),
+                                );
+                                if (d != null) {
+                                  setState(() {
+                                    customEndDate = d;
+                                    if (customStartDate.isAfter(customEndDate)) {
+                                      customStartDate = customEndDate;
+                                    }
+                                  });
+                                }
+                              },
+                            ),
+                            ActionChip(
+                              label: Text(_t('એક જ તારીખ', 'Single Day'), style: const TextStyle(fontSize: 11)),
+                              visualDensity: VisualDensity.compact,
+                              onPressed: () async {
+                                final d = await showDatePicker(
+                                  context: context,
+                                  initialDate: _clampDate1800To2100(customStartDate),
+                                  firstDate: DateTime(1800, 1, 1),
+                                  lastDate: DateTime(2100, 12, 31),
+                                );
+                                if (d != null) {
+                                  setState(() {
+                                    customStartDate = d;
+                                    customEndDate = d;
+                                  });
+                                }
+                              },
+                            ),
+                            DropdownButton<String>(
+                              value: _txSortMode,
+                              isDense: true,
+                              underline: const SizedBox(),
+                              items: [
+                                DropdownMenuItem(value: 'date_desc', child: Text(_t('નવી → જૂની', 'Newest First'), style: const TextStyle(fontSize: 11.5))),
+                                DropdownMenuItem(value: 'date_asc', child: Text(_t('જૂની → નવી', 'Oldest First'), style: const TextStyle(fontSize: 11.5))),
+                                DropdownMenuItem(value: 'amount_desc', child: Text(_t('વધુ રકમ', 'High Amount'), style: const TextStyle(fontSize: 11.5))),
+                                DropdownMenuItem(value: 'amount_asc', child: Text(_t('ઓછી રકમ', 'Low Amount'), style: const TextStyle(fontSize: 11.5))),
+                              ],
+                              onChanged: (v) {
+                                if (v != null) setState(() => _txSortMode = v);
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 12.0),
                     child: Row(
                       children: [
-                        _buildMiniSummaryCard('આવક', totalIncome, Colors.green),
-                        _buildMiniSummaryCard('ખર્ચ', totalExpense, Colors.redAccent),
-                        _buildMiniSummaryCard('રોકાણ', assetGain, Colors.blue),
-                        _buildMiniSummaryCard('નેટ બચત', netSavings, Colors.teal),
+                        _buildMiniSummaryCard(_t('આવક', 'Income'), totalIncome, Colors.green),
+                        _buildMiniSummaryCard(_t('ખર્ચ', 'Expense'), totalExpense, Colors.redAccent),
+                        _buildMiniSummaryCard(_t('રોકાણ', 'Invest'), assetGain, Colors.blue),
+                        _buildMiniSummaryCard(_t('નેટ બચત', 'Net Save'), netSavings, Colors.teal),
                       ],
                     ),
                   ),
